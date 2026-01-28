@@ -1,0 +1,192 @@
+Option Explicit
+
+'================================
+' ボタン押下時の入口
+'================================
+Sub RunDiffCheck()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    Call ClearOldResult
+    Call AppendResultColumns
+    Call CompareData
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "検証が完了しました。", vbInformation
+
+End Sub
+
+
+'================================
+' 既存の差分結果をクリア
+'（再実行しても問題ないように）
+'================================
+Sub ClearOldResult()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    Dim lastCol As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    If ws.Cells(1, lastCol).Value Like "*差分*" Then
+        ws.Columns(lastCol).Clear
+        ws.Columns(lastCol - 1).Clear
+    End If
+
+    ' セルの色をリセット
+    ws.Cells.Interior.ColorIndex = xlNone
+
+End Sub
+
+
+'================================
+' aft シートの右側に結果列を追加
+'================================
+Sub AppendResultColumns()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    Dim lastCol As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ws.Cells(1, lastCol + 1).Value = "Bef-Aft 差分結果"
+    ws.Cells(1, lastCol + 2).Value = "Aft-Master 差分結果"
+
+End Sub
+
+
+'================================
+' 差分比較メイン処理
+'================================
+Sub CompareData()
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet
+    Set wsAft = Sheets("aft")
+    Set wsBef = Sheets("bef")
+    Set wsMas = Sheets("master")
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsAft.Cells(1, wsAft.Columns.Count).End(xlToLeft).Column - 2
+
+    '============================
+    ' PK 列を取得
+    '============================
+    Dim pkCols As Collection
+    Set pkCols = New Collection
+
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(wsAft.Cells(3, c).Value) <> "" Then
+            pkCols.Add c
+        End If
+    Next c
+
+    If pkCols.Count = 0 Then
+        MsgBox "PK 列が検出されませんでした。", vbCritical
+        Exit Sub
+    End If
+
+    '============================
+    ' Key → 行番号 のマッピング作成
+    '============================
+    Dim befMap As Object, masMap As Object
+    Set befMap = CreateObject("Scripting.Dictionary")
+    Set masMap = CreateObject("Scripting.Dictionary")
+
+    Call BuildRowMap(wsBef, pkCols, befMap)
+    Call BuildRowMap(wsMas, pkCols, masMap)
+
+    '============================
+    ' データ比較処理
+    '============================
+    Dim r As Long
+    For r = 5 To lastRow
+
+        Dim key As String
+        key = BuildKey(wsAft, r, pkCols)
+
+        Dim befRow As Long, masRow As Long
+        befRow = IIf(befMap.Exists(key), befMap(key), 0)
+        masRow = IIf(masMap.Exists(key), masMap(key), 0)
+
+        Dim befNG As Boolean, masNG As Boolean
+        befNG = False
+        masNG = False
+
+        For c = 1 To lastCol
+
+            ' 「比較対象」の列のみ処理
+            If Trim(wsAft.Cells(4, c).Value) <> "" Then
+
+                ' bef vs aft
+                If befRow > 0 Then
+                    If wsAft.Cells(r, c).Value <> wsBef.Cells(befRow, c).Value Then
+                        befNG = True
+                        wsAft.Cells(r, c).Interior.Color = RGB(255, 180, 180)
+                    End If
+                End If
+
+                ' aft vs master
+                If masRow > 0 Then
+                    If wsAft.Cells(r, c).Value <> wsMas.Cells(masRow, c).Value Then
+                        masNG = True
+                        wsAft.Cells(r, c).Interior.Color = RGB(255, 180, 180)
+                    End If
+                End If
+
+            End If
+        Next c
+
+        '============================
+        ' 差分結果（式で出力）
+        '============================
+        wsAft.Cells(r, lastCol + 1).Formula = _
+            "=IF(" & befNG & ",""NG"",""OK"")"
+
+        wsAft.Cells(r, lastCol + 2).Formula = _
+            "=IF(" & masNG & ",""NG"",""OK"")"
+
+    Next r
+
+End Sub
+
+
+'================================
+' PK 値から Key を生成
+'================================
+Function BuildKey(ws As Worksheet, r As Long, pkCols As Collection) As String
+
+    Dim key As String
+    Dim i As Variant
+
+    For Each i In pkCols
+        key = key & ws.Cells(r, i).Value & "|"
+    Next i
+
+    BuildKey = key
+
+End Function
+
+
+'================================
+' Sheet の行マッピング作成
+'（Key → 行番号）
+'================================
+Sub BuildRowMap(ws As Worksheet, pkCols As Collection, dict As Object)
+
+    Dim r As Long
+    Dim lastRow As Long
+
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    For r = 5 To lastRow
+        dict(BuildKey(ws, r, pkCols)) = r
+    Next r
+
+End Sub
