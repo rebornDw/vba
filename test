@@ -1,0 +1,129 @@
+Sub Compare_AFT_With_BEF_CellLevel_Final()
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMaster As Worksheet
+    Set wsAft = Sheets("aft")
+    Set wsBef = Sheets("bef")
+    Set wsMaster = Sheets("master")
+
+    Dim lastCol As Long
+    lastCol = wsAft.Cells(2, Columns.Count).End(xlToLeft).Column
+
+    ' ==============================
+    ' 1. 获取 Key 列（第3行）
+    ' ==============================
+    Dim keyCols As Object
+    Set keyCols = CreateObject("Scripting.Dictionary")
+
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(wsAft.Cells(3, c).Value) <> "" Then
+            keyCols(c) = True
+        End If
+    Next c
+
+    If keyCols.Count = 0 Then
+        MsgBox "未定义唯一 Key（第3行）", vbCritical
+        Exit Sub
+    End If
+
+    ' ==============================
+    ' 2. master 中可比较字段（第4行）
+    ' ==============================
+    Dim compareCols As Object
+    Set compareCols = CreateObject("Scripting.Dictionary")
+
+    For c = 1 To lastCol
+        If wsMaster.Cells(4, c).Value = "○" Then
+            compareCols(c) = wsMaster.Cells(2, c).Value   ' 物理名
+        End If
+    Next c
+
+    ' ==============================
+    ' 3. aft 结果列
+    ' ==============================
+    Dim resultCol As Long, diffCol As Long
+    resultCol = lastCol + 1
+    diffCol = lastCol + 2
+
+    wsAft.Cells(1, resultCol).Value = "比较结果"
+    wsAft.Cells(1, diffCol).Value = "不一致字段"
+
+    ' ==============================
+    ' 4. bef 数据 Key → 行号 Map
+    ' ==============================
+    Dim befMap As Object
+    Set befMap = CreateObject("Scripting.Dictionary")
+
+    Dim r As Long
+    For r = 5 To wsBef.Cells(Rows.Count, 1).End(xlUp).Row
+        befMap(GetKeyValue(wsBef, r, keyCols)) = r
+    Next r
+
+    ' ==============================
+    ' 5. 主比较逻辑
+    ' ==============================
+    Dim aftRow As Long
+    For aftRow = 5 To wsAft.Cells(Rows.Count, 1).End(xlUp).Row
+
+        ' 清除旧颜色（整行 + 单元格）
+        wsAft.Rows(aftRow).Interior.ColorIndex = xlNone
+
+        Dim keyVal As String
+        keyVal = GetKeyValue(wsAft, aftRow, keyCols)
+
+        ' === Key 不存在 ===
+        If Not befMap.exists(keyVal) Then
+            wsAft.Cells(aftRow, resultCol).Value = "NG"
+            wsAft.Cells(aftRow, diffCol).Value = "KEY_NOT_FOUND"
+            GoTo NextRow
+        End If
+
+        Dim befRow As Long
+        befRow = befMap(keyVal)
+
+        Dim ngList As String
+        ngList = ""
+
+        Dim colIndex As Variant
+        For Each colIndex In compareCols.Keys
+
+            ' 清单元格颜色
+            wsAft.Cells(aftRow, colIndex).Interior.ColorIndex = xlNone
+
+            If wsAft.Cells(aftRow, colIndex).Text <> wsBef.Cells(befRow, colIndex).Text Then
+                ngList = ngList & compareCols(colIndex) & ", "
+                wsAft.Cells(aftRow, colIndex).Interior.Color = RGB(255, 180, 180)
+            End If
+
+        Next colIndex
+
+        If ngList = "" Then
+            wsAft.Cells(aftRow, resultCol).Value = "OK"
+            wsAft.Cells(aftRow, diffCol).Value = ""
+        Else
+            wsAft.Cells(aftRow, resultCol).Value = "NG"
+            wsAft.Cells(aftRow, diffCol).Value = Left(ngList, Len(ngList) - 2)
+        End If
+
+NextRow:
+    Next aftRow
+
+    MsgBox "比较完成（仅标红 NG 单元格）", vbInformation
+
+End Sub
+
+
+' ======================================
+' Key 值拼接（支持多 Key）
+' ======================================
+Function GetKeyValue(ws As Worksheet, r As Long, keyCols As Object) As String
+    Dim c As Variant
+    Dim keyVal As String
+    keyVal = ""
+
+    For Each c In keyCols.Keys
+        keyVal = keyVal & "|" & ws.Cells(r, c).Text
+    Next c
+
+    GetKeyValue = keyVal
+End Function
