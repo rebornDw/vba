@@ -1,0 +1,209 @@
+Option Explicit
+
+'==============================
+' ボタン入口
+'==============================
+Sub RunDiffCheck()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ClearOldResult
+    AppendResultColumns
+    CompareAndSetFormula
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "差分検証が完了しました。", vbInformation
+
+End Sub
+
+
+'==============================
+' 旧結果クリア
+'==============================
+Sub ClearOldResult()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    ws.Cells.Interior.ColorIndex = xlNone
+    ws.Cells.ClearComments
+
+    Dim lastCol As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    If ws.Cells(1, lastCol).Value Like "*差分*" Then
+        ws.Columns(lastCol).Clear
+        ws.Columns(lastCol - 1).Clear
+    End If
+
+End Sub
+
+
+'==============================
+' 結果列追加
+'==============================
+Sub AppendResultColumns()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    Dim lastCol As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ws.Cells(1, lastCol + 1).Value = "Bef-Aft 差分結果"
+    ws.Cells(1, lastCol + 2).Value = "Aft-Master 差分結果"
+
+End Sub
+
+
+'==============================
+' 比較 + 公式生成 + コメント付与
+'==============================
+Sub CompareAndSetFormula()
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet
+    Set wsAft = Sheets("aft")
+    Set wsBef = Sheets("bef")
+    Set wsMas = Sheets("master")
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsAft.Cells(1, wsAft.Columns.Count).End(xlToLeft).Column - 2
+
+    ' PK 列取得（3行目）
+    Dim pkCols As Collection
+    Set pkCols = New Collection
+
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(wsAft.Cells(3, c).Value) <> "" Then
+            pkCols.Add c
+        End If
+    Next c
+
+    ' 行マッピング
+    Dim befMap As Object, masMap As Object
+    Set befMap = CreateObject("Scripting.Dictionary")
+    Set masMap = CreateObject("Scripting.Dictionary")
+
+    BuildRowMap wsBef, pkCols, befMap
+    BuildRowMap wsMas, pkCols, masMap
+
+    Dim r As Long
+    For r = 5 To lastRow
+
+        Dim key As String
+        key = BuildKey(wsAft, r, pkCols)
+
+        Dim befRow As Long, masRow As Long
+        befRow = IIf(befMap.Exists(key), befMap(key), 0)
+        masRow = IIf(masMap.Exists(key), masMap(key), 0)
+
+        '--------------------------
+        ' Bef-Aft 差分公式
+        '--------------------------
+        wsAft.Cells(r, lastCol + 1).Formula = _
+            BuildDiffFormula(wsAft, wsBef, r, befRow, lastCol)
+
+        '--------------------------
+        ' Aft-Master 差分公式
+        '--------------------------
+        wsAft.Cells(r, lastCol + 2).Formula = _
+            BuildDiffFormula(wsAft, wsMas, r, masRow, lastCol)
+
+        '--------------------------
+        ' NG セル装飾 + コメント
+        '--------------------------
+        For c = 1 To lastCol
+            If Trim(wsAft.Cells(4, c).Value) <> "" Then
+                If befRow > 0 And masRow > 0 Then
+                    If Trim(wsAft.Cells(r, c).Value) <> Trim(wsBef.Cells(befRow, c).Value) _
+                    Or Trim(wsAft.Cells(r, c).Value) <> Trim(wsMas.Cells(masRow, c).Value) Then
+
+                        With wsAft.Cells(r, c)
+                            .Interior.Color = RGB(255, 180, 180)
+                            .AddComment _
+                                "bef : " & wsBef.Cells(befRow, c).Value & vbCrLf & _
+                                "aft : " & wsAft.Cells(r, c).Value & vbCrLf & _
+                                "master : " & wsMas.Cells(masRow, c).Value
+                        End With
+
+                    End If
+                End If
+            End If
+        Next c
+
+    Next r
+
+End Sub
+
+
+'==============================
+' 差分用 Excel 公式生成（安全版）
+'==============================
+Function BuildDiffFormula(wsAft As Worksheet, wsCmp As Worksheet, _
+                          aftRow As Long, cmpRow As Long, lastCol As Long) As String
+
+    Dim f As String
+    Dim c As Long
+    Dim hasCond As Boolean
+    hasCond = False
+
+    ' 比較対象が無い場合
+    If cmpRow = 0 Then
+        BuildDiffFormula = "=""対象なし"""
+        Exit Function
+    End If
+
+    f = "=IF(OR("
+
+    For c = 1 To lastCol
+        If Trim(wsAft.Cells(4, c).Value) <> "" Then
+            hasCond = True
+            f = f & _
+                "TRIM(" & wsAft.Cells(aftRow, c).Address(False, False) & _
+                ")<>TRIM(" & wsCmp.Cells(cmpRow, c).Address(False, False) & "),"
+        End If
+    Next c
+
+    If Not hasCond Then
+        BuildDiffFormula = "=""OK"""
+        Exit Function
+    End If
+
+    f = Left(f, Len(f) - 1) & "),""NG"",""OK"")"
+    BuildDiffFormula = f
+
+End Function
+
+
+'==============================
+' PK Key 作成
+'==============================
+Function BuildKey(ws As Worksheet, r As Long, pkCols As Collection) As String
+    Dim k As String
+    Dim i As Variant
+    For Each i In pkCols
+        k = k & ws.Cells(r, i).Value & "|"
+    Next i
+    BuildKey = k
+End Function
+
+
+'==============================
+' 行マッピング作成
+'==============================
+Sub BuildRowMap(ws As Worksheet, pkCols As Collection, dict As Object)
+
+    Dim r As Long
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    For r = 5 To lastRow
+        dict(BuildKey(ws, r, pkCols)) = r
+    Next r
+
+End Sub
