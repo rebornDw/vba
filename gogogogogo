@@ -1,0 +1,464 @@
+Option Explicit
+
+'========================
+' シート名
+'========================
+Private Const SHEET_AFT As String = "aft"
+Private Const SHEET_BEF As String = "bef"
+Private Const SHEET_MAS As String = "master"
+
+'========================
+' 行/列ルール
+'========================
+Private Const HEADER_ROWS As Long = 4
+Private Const DATA_START_ROW As Long = 5
+
+'========================
+' 出力ヘッダ
+'========================
+Private Const HDR_RES_BEF As String = "Bef-Aft 結果（新規/更新/削除/修正）"
+Private Const HDR_RES_MAS As String = "Aft-Master 結果（新規/更新/削除/修正）"
+
+'========================
+' 表示（色）
+'========================
+Private Const ROW_RED As Long = 1
+Private Const CELL_YELLOW As Long = 2
+
+Private gLastStep As String
+
+'==================================================
+' メイン入口（数式なし版）
+'==================================================
+Public Sub RunDiffCheck_NoFormula()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    On Error GoTo EH
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet
+    Set wsAft = Sheets(SHEET_AFT)
+    Set wsBef = Sheets(SHEET_BEF)
+    Set wsMas = Sheets(SHEET_MAS)
+
+    gLastStep = "前処理：保護チェック"
+    If wsAft.ProtectContents Or wsBef.ProtectContents Or wsMas.ProtectContents Then
+        Err.Raise vbObjectError + 100, , "いずれかのシートが保護されています。解除してください。"
+    End If
+
+    ' ① 旧結果をクリア（ヘッダ行の書式は維持）
+    gLastStep = "前処理：旧結果クリア"
+    ClearOldResult wsAft
+
+    ' ② PK列/比較列を取得（aftの定義を基準にする：列は完全一致という前提）
+    gLastStep = "設定取得：PK列/比較列"
+    Dim baseCol As Long
+    baseCol = GetBaseLastCol(wsAft)
+
+    Dim pkCols As Collection, cmpCols As Collection
+    Set pkCols = GetPKColumns(wsAft, baseCol)
+    Set cmpCols = GetCompareColumns(wsAft, baseCol)
+
+    If pkCols.Count = 0 Then Err.Raise vbObjectError + 1, , "PK列（3行目）が検出できません。"
+    If cmpCols.Count = 0 Then Err.Raise vbObjectError + 2, , "比較対象列（4行目）が検出できません。（○がありません）"
+
+    ' ③ 3シートをPK順にソート（見やすさのため）
+    gLastStep = "並び替え：aft"
+    SortSheetByPK wsAft, pkCols, baseCol
+
+    gLastStep = "並び替え：bef"
+    SortSheetByPK wsBef, pkCols, baseCol
+
+    gLastStep = "並び替え：master"
+    SortSheetByPK wsMas, pkCols, baseCol
+
+    ' ソート後に再取得（最終列が変わらない前提だが安全のため）
+    baseCol = GetBaseLastCol(wsAft)
+
+    ' ④ aft末尾に結果列2本を追加（既にあれば作り直し）
+    gLastStep = "結果列追加"
+    Dim colResBef As Long, colResMas As Long
+    AddOrResetResultColumns wsAft, baseCol, colResBef, colResMas
+
+    ' ⑤ 行マップ作成（PK→行）
+    gLastStep = "マップ作成"
+    Dim mapAft As Object, mapBef As Object, mapMas As Object
+    Set mapAft = CreateObject("Scripting.Dictionary")
+    Set mapBef = CreateObject("Scripting.Dictionary")
+    Set mapMas = CreateObject("Scripting.Dictionary")
+
+    BuildRowMap wsAft, pkCols, mapAft
+    BuildRowMap wsBef, pkCols, mapBef
+    BuildRowMap wsMas, pkCols, mapMas
+
+    ' ⑥ aft既存行を比較して結果/色/コメントを付ける
+    gLastStep = "比較：aft既存行"
+    CompareExistingAftRows wsAft, wsBef, wsMas, pkCols, cmpCols, mapBef, mapMas, colResBef, colResMas, baseCol
+
+    ' ⑦ 削除（bef/masterにあってaftにない）をaft末尾に追記
+    gLastStep = "削除行追記"
+    AppendDeletedRows wsAft, wsBef, wsMas, pkCols, cmpCols, mapAft, mapBef, mapMas, colResBef, colResMas, baseCol
+
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "完了しました（数式なし・ソート済み）。", vbInformation
+    Exit Sub
+
+EH:
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    MsgBox "エラー: " & Err.Number & vbCrLf & _
+           "内容: " & Err.Description & vbCrLf & _
+           "ステップ: " & gLastStep, vbCritical
+End Sub
+
+'==================================================
+' 旧結果クリア（データ行のみ色/コメントをクリア、結果列も削除）
+'==================================================
+Private Sub ClearOldResult(wsAft As Worksheet)
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsAft.Cells(1, wsAft.Columns.Count).End(xlToLeft).Column
+
+    If lastRow >= DATA_START_ROW Then
+        wsAft.Range(wsAft.Cells(DATA_START_ROW, 1), wsAft.Cells(lastRow, lastCol)).Interior.ColorIndex = xlNone
+        On Error Resume Next
+        wsAft.Range(wsAft.Cells(DATA_START_ROW, 1), wsAft.Cells(lastRow, lastCol)).ClearComments
+        On Error GoTo 0
+    End If
+
+    ' 右端に既存結果列があれば削除（ヘッダ名で判定）
+    Dim c As Long
+    For c = lastCol To 1 Step -1
+        If CStr(wsAft.Cells(1, c).Value) = HDR_RES_MAS Or CStr(wsAft.Cells(1, c).Value) = HDR_RES_BEF Then
+            wsAft.Columns(c).Delete
+        End If
+    Next c
+
+End Sub
+
+'==================================================
+' 元データの最終列（1行目の右端）
+'==================================================
+Private Function GetBaseLastCol(ws As Worksheet) As Long
+    GetBaseLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+End Function
+
+'==================================================
+' PK列（3行目が空でない列）
+'==================================================
+Private Function GetPKColumns(ws As Worksheet, baseLastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To baseLastCol
+        If Trim(CStr(ws.Cells(3, c).Value)) <> "" Then col.Add c
+    Next c
+    Set GetPKColumns = col
+End Function
+
+'==================================================
+' 比較対象列（4行目が空でない列＝○）
+'==================================================
+Private Function GetCompareColumns(ws As Worksheet, baseLastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To baseLastCol
+        If Trim(CStr(ws.Cells(4, c).Value)) <> "" Then col.Add c
+    Next c
+    Set GetCompareColumns = col
+End Function
+
+'==================================================
+' PKキー作成（値の連結）
+'==================================================
+Private Function BuildKey(ws As Worksheet, r As Long, pkCols As Collection) As String
+    Dim k As String
+    Dim v As Variant
+    For Each v In pkCols
+        k = k & Norm(ws.Cells(r, CLng(v)).Value) & "|"
+    Next
+    If Len(k) > 0 Then k = Left$(k, Len(k) - 1)
+    BuildKey = k
+End Function
+
+'==================================================
+' 正規化（Trim + 文字列化）
+'==================================================
+Private Function Norm(v As Variant) As String
+    If IsError(v) Then
+        Norm = "#ERR"
+    Else
+        Norm = Trim(CStr(v))
+    End If
+End Function
+
+'==================================================
+' PKでシートをソート（ヘルパー列を一時作成して削除）
+'==================================================
+Private Sub SortSheetByPK(ws As Worksheet, pkCols As Collection, baseLastCol As Long)
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < DATA_START_ROW Then Exit Sub
+
+    Dim helperCol As Long
+    helperCol = baseLastCol + 1
+
+    ' ヘルパー列（PKキー）作成
+    Dim r As Long
+    ws.Cells(1, helperCol).Value = "___PK_SORT_KEY___"
+    For r = DATA_START_ROW To lastRow
+        ws.Cells(r, helperCol).Value = BuildKey(ws, r, pkCols)
+    Next r
+
+    ' ソート範囲（1～lastCol+1 を含める）
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, helperCol))
+
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(DATA_START_ROW, helperCol), ws.Cells(lastRow, helperCol)), _
+                        SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange rng
+        .Header = xlYes ' 1行目をヘッダ扱い
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+
+    ' ヘルパー列削除
+    ws.Columns(helperCol).Delete
+
+End Sub
+
+'==================================================
+' 結果列2本追加（末尾）
+'==================================================
+Private Sub AddOrResetResultColumns(wsAft As Worksheet, baseLastCol As Long, ByRef colResBef As Long, ByRef colResMas As Long)
+
+    colResBef = baseLastCol + 1
+    colResMas = baseLastCol + 2
+
+    wsAft.Cells(1, colResBef).Value = HDR_RES_BEF
+    wsAft.Cells(1, colResMas).Value = HDR_RES_MAS
+
+    wsAft.Cells(2, colResBef).Value = ""
+    wsAft.Cells(3, colResBef).Value = ""
+    wsAft.Cells(4, colResBef).Value = ""
+
+    wsAft.Cells(2, colResMas).Value = ""
+    wsAft.Cells(3, colResMas).Value = ""
+    wsAft.Cells(4, colResMas).Value = ""
+
+End Sub
+
+'==================================================
+' PK→行 マップ作成
+'==================================================
+Private Sub BuildRowMap(ws As Worksheet, pkCols As Collection, dict As Object)
+    dict.RemoveAll
+
+    Dim lastRow As Long, r As Long, k As String
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < DATA_START_ROW Then Exit Sub
+
+    For r = DATA_START_ROW To lastRow
+        k = BuildKey(ws, r, pkCols)
+        If Len(k) > 0 Then
+            If Not dict.Exists(k) Then dict.Add k, r
+        End If
+    Next r
+End Sub
+
+'==================================================
+' aft既存行の比較
+'==================================================
+Private Sub CompareExistingAftRows(wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet, _
+                                  pkCols As Collection, cmpCols As Collection, _
+                                  mapBef As Object, mapMas As Object, _
+                                  colResBef As Long, colResMas As Long, baseLastCol As Long)
+
+    Dim lastRowAft As Long
+    lastRowAft = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    If lastRowAft < DATA_START_ROW Then Exit Sub
+
+    Dim r As Long
+    For r = DATA_START_ROW To lastRowAft
+
+        Dim key As String
+        key = BuildKey(wsAft, r, pkCols)
+
+        Dim befRow As Long, masRow As Long
+        befRow = IIf(mapBef.Exists(key), CLng(mapBef(key)), 0)
+        masRow = IIf(mapMas.Exists(key), CLng(mapMas(key)), 0)
+
+        Dim befStatus As String, masStatus As String
+        Dim befDiff As Boolean, masDiff As Boolean
+
+        '--- Bef-Aft
+        If befRow = 0 Then
+            befStatus = "新規"
+        Else
+            befDiff = HasDiff(wsAft, r, wsBef, befRow, cmpCols)
+            If befDiff Then
+                befStatus = "更新"
+            Else
+                befStatus = "修正"  '差分なし
+            End If
+        End If
+
+        '--- Aft-Master
+        If masRow = 0 Then
+            masStatus = "新規"
+        Else
+            masDiff = HasDiff(wsAft, r, wsMas, masRow, cmpCols)
+            If masDiff Then
+                masStatus = "更新"
+            Else
+                masStatus = "修正"  '差分なし
+            End If
+        End If
+
+        wsAft.Cells(r, colResBef).Value = befStatus
+        wsAft.Cells(r, colResMas).Value = masStatus
+
+        ' 不一致がある場合：行赤、セル黄＋コメント
+        If (befRow <> 0 And befDiff) Or (masRow <> 0 And masDiff) Then
+            PaintRow wsAft, r, baseLastCol, ROW_RED
+            MarkCellsAndComment wsAft, r, wsBef, befRow, wsMas, masRow, cmpCols
+        End If
+
+    Next r
+
+End Sub
+
+'==================================================
+' 差分判定（比較対象列だけ）
+'==================================================
+Private Function HasDiff(wsA As Worksheet, rowA As Long, wsB As Worksheet, rowB As Long, cmpCols As Collection) As Boolean
+    Dim v As Variant, c As Long
+    For Each v In cmpCols
+        c = CLng(v)
+        If Norm(wsA.Cells(rowA, c).Value) <> Norm(wsB.Cells(rowB, c).Value) Then
+            HasDiff = True
+            Exit Function
+        End If
+    Next v
+    HasDiff = False
+End Function
+
+'==================================================
+' 行を赤く塗る（元データ範囲だけ）
+'==================================================
+Private Sub PaintRow(ws As Worksheet, r As Long, baseLastCol As Long, mode As Long)
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(r, 1), ws.Cells(r, baseLastCol))
+    If mode = ROW_RED Then
+        rng.Interior.Color = RGB(255, 200, 200)
+    End If
+End Sub
+
+'==================================================
+' 差分セルを黄色＋コメント（bef/aft/master値）
+'==================================================
+Private Sub MarkCellsAndComment(wsAft As Worksheet, aftRow As Long, _
+                                wsBef As Worksheet, befRow As Long, _
+                                wsMas As Worksheet, masRow As Long, _
+                                cmpCols As Collection)
+
+    Dim v As Variant, c As Long
+    For Each v In cmpCols
+        c = CLng(v)
+
+        Dim aftVal As String, befVal As String, masVal As String
+        aftVal = Norm(wsAft.Cells(aftRow, c).Value)
+        befVal = IIf(befRow > 0, Norm(wsBef.Cells(befRow, c).Value), "(なし)")
+        masVal = IIf(masRow > 0, Norm(wsMas.Cells(masRow, c).Value), "(なし)")
+
+        ' どちらかと差分があるなら黄色＋コメント
+        If (befRow > 0 And aftVal <> befVal) Or (masRow > 0 And aftVal <> masVal) Then
+            With wsAft.Cells(aftRow, c)
+                .Interior.Color = RGB(255, 255, 180)
+                On Error Resume Next
+                .ClearComments
+                On Error GoTo 0
+                .AddComment "bef : " & befVal & vbCrLf & _
+                            "aft : " & aftVal & vbCrLf & _
+                            "master : " & masVal
+            End With
+        End If
+    Next v
+End Sub
+
+'==================================================
+' 削除行追記（bef/masterにあってaftにないキーをaft末尾に追加）
+'  - 追記行は行を赤
+'  - セル黄＋コメントは付けない（aftに元の値が無いため）
+'==================================================
+Private Sub AppendDeletedRows(wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet, _
+                             pkCols As Collection, cmpCols As Collection, _
+                             mapAft As Object, mapBef As Object, mapMas As Object, _
+                             colResBef As Long, colResMas As Long, baseLastCol As Long)
+
+    Dim unionMissing As Object
+    Set unionMissing = CreateObject("Scripting.Dictionary")
+
+    Dim k As Variant
+    For Each k In mapBef.Keys
+        If Not mapAft.Exists(CStr(k)) Then unionMissing(CStr(k)) = True
+    Next k
+    For Each k In mapMas.Keys
+        If Not mapAft.Exists(CStr(k)) Then unionMissing(CStr(k)) = True
+    Next k
+
+    If unionMissing.Count = 0 Then Exit Sub
+
+    Dim appendRow As Long
+    appendRow = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row + 1
+
+    Dim key As Variant
+    For Each key In unionMissing.Keys
+
+        Dim rb As Long, rm As Long
+        rb = IIf(mapBef.Exists(CStr(key)), CLng(mapBef(CStr(key))), 0)
+        rm = IIf(mapMas.Exists(CStr(key)), CLng(mapMas(CStr(key))), 0)
+
+        ' 行データは、befがあればbefから、なければmasterからコピー
+        If rb > 0 Then
+            wsAft.Range(wsAft.Cells(appendRow, 1), wsAft.Cells(appendRow, baseLastCol)).Value = _
+                wsBef.Range(wsBef.Cells(rb, 1), wsBef.Cells(rb, baseLastCol)).Value
+        ElseIf rm > 0 Then
+            wsAft.Range(wsAft.Cells(appendRow, 1), wsAft.Cells(appendRow, baseLastCol)).Value = _
+                wsMas.Range(wsMas.Cells(rm, 1), wsMas.Cells(rm, baseLastCol)).Value
+        End If
+
+        ' 結果列
+        wsAft.Cells(appendRow, colResBef).Value = IIf(rb > 0, "削除", "修正")
+        wsAft.Cells(appendRow, colResMas).Value = IIf(rm > 0, "削除", "修正")
+
+        ' 行赤
+        PaintRow wsAft, appendRow, baseLastCol, ROW_RED
+
+        ' PKセルにコメント（どこから来た削除か）
+        On Error Resume Next
+        wsAft.Cells(appendRow, 1).ClearComments
+        On Error GoTo 0
+        wsAft.Cells(appendRow, 1).AddComment _
+            "この行はaftに存在しません（削除扱い）。" & vbCrLf & _
+            "bef: " & IIf(rb > 0, "あり（行 " & rb & "）", "なし") & vbCrLf & _
+            "master: " & IIf(rm > 0, "あり（行 " & rm & "）", "なし")
+
+        appendRow = appendRow + 1
+    Next key
+
+    ' 追記後、aftを再度PK順にソート（削除行も含めて並べる）
+    Dim newBaseLastCol As Long
+    newBaseLastCol = GetBaseLastCol(wsAft)
+    SortSheetByPK wsAft, pkCols, newBaseLastCol
+
+End Sub
