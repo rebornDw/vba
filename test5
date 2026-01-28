@@ -1,0 +1,158 @@
+Option Explicit
+
+'==================================================
+' メイン入口（ボタンに紐付け）
+'==================================================
+Sub RunDiffCheck()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ClearOldResult
+    AppendResultColumns
+    GenerateJudgeFormulas
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "差分検証（新規・変更・OK）が完了しました。", vbInformation
+
+End Sub
+
+
+'==================================================
+' 旧結果クリア（1～4行目の書式は保持）
+'==================================================
+Sub ClearOldResult()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' データ行のみ初期化
+    ws.Range(ws.Cells(5, 1), ws.Cells(lastRow, lastCol)).Interior.ColorIndex = xlNone
+    ws.Range(ws.Cells(5, 1), ws.Cells(lastRow, lastCol)).ClearComments
+
+    ' 旧判定列削除
+    If ws.Cells(1, lastCol).Value Like "*判定*" Then
+        ws.Columns(lastCol).Clear
+        ws.Columns(lastCol - 1).Clear
+    End If
+
+End Sub
+
+
+'==================================================
+' 判定結果列追加
+'==================================================
+Sub AppendResultColumns()
+
+    Dim ws As Worksheet
+    Set ws = Sheets("aft")
+
+    Dim lastCol As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ws.Cells(1, lastCol + 1).Value = "Bef-Aft 判定結果"
+    ws.Cells(1, lastCol + 2).Value = "Aft-Master 判定結果"
+
+End Sub
+
+
+'==================================================
+' 判定用数式生成（PK + MATCH）
+'==================================================
+Sub GenerateJudgeFormulas()
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet
+    Set wsAft = Sheets("aft")
+    Set wsBef = Sheets("bef")
+    Set wsMas = Sheets("master")
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsAft.Cells(1, wsAft.Columns.Count).End(xlToLeft).Column - 2
+
+    Dim pkCols As Collection, cmpCols As Collection
+    Set pkCols = GetPKColumns(wsAft, lastCol)
+    Set cmpCols = GetCompareColumns(wsAft, lastCol)
+
+    Dim r As Long
+    For r = 5 To lastRow
+
+        wsAft.Cells(r, lastCol + 1).Formula = _
+            BuildJudgeFormula(wsAft, wsBef, r, pkCols, cmpCols)
+
+        wsAft.Cells(r, lastCol + 2).Formula = _
+            BuildJudgeFormula(wsAft, wsMas, r, pkCols, cmpCols)
+
+    Next r
+
+End Sub
+
+
+'==================================================
+' 判定数式生成（新規／変更／OK）
+'==================================================
+Function BuildJudgeFormula(wsAft As Worksheet, wsCmp As Worksheet, _
+                           aftRow As Long, pkCols As Collection, cmpCols As Collection) As String
+
+    Dim pkAft As String, pkCmp As String
+    Dim c As Variant
+
+    ' PK 文字列生成
+    For Each c In pkCols
+        pkAft = pkAft & wsAft.Cells(aftRow, c).Address(False, False) & "&""|""&"
+        pkCmp = pkCmp & wsCmp.Columns(c).Address & "&""|""&"
+    Next c
+
+    pkAft = Left(pkAft, Len(pkAft) - 6)
+    pkCmp = Left(pkCmp, Len(pkCmp) - 6)
+
+    Dim f As String
+    f = "=IFERROR(" & _
+        "IF(SUMPRODUCT(--("
+
+    For Each c In cmpCols
+        f = f & _
+            wsAft.Cells(aftRow, c).Address(False, False) & "<>" & _
+            "INDEX(" & wsCmp.Columns(c).Address & _
+            ",MATCH(" & pkAft & "," & pkCmp & ",0)))+"
+    Next c
+
+    f = Left(f, Len(f) - 1) & _
+        "))>0,""変更"",""OK"")," & _
+        """新規"")"
+
+    BuildJudgeFormula = f
+
+End Function
+
+
+'==================================================
+' PK列取得（3行目）
+'==================================================
+Function GetPKColumns(ws As Worksheet, lastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(ws.Cells(3, c).Value) <> "" Then col.Add c
+    Next c
+    Set GetPKColumns = col
+End Function
+
+
+'==================================================
+' 比較対象列取得（4行目）
+'==================================================
+Function GetCompareColumns(ws As Worksheet, lastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(ws.Cells(4, c).Value) <> "" Then col.Add c
+    Next c
+    Set GetCompareColumns = col
+End Function
