@@ -1,0 +1,365 @@
+Option Explicit
+
+'========================
+' 設定
+'========================
+Private Const SHEET_AFT As String = "aft"
+Private Const SHEET_BEF As String = "bef"
+Private Const SHEET_MAS As String = "master"
+
+Private Const HDR_PKKEY As String = "PK_KEY"
+Private Const HDR_BEF_RES As String = "Bef-Aft 判定結果"
+Private Const HDR_MAS_RES As String = "Aft-Master 判定結果"
+
+'==================================================
+' メイン入口（ボタン）
+'==================================================
+Public Sub RunDiffCheck()
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+
+    On Error GoTo EH
+
+    Dim wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet
+    Set wsAft = Sheets(SHEET_AFT)
+    Set wsBef = Sheets(SHEET_BEF)
+    Set wsMas = Sheets(SHEET_MAS)
+
+    ' 旧結果クリア（前4行は保持）
+    ClearOldResult_KeepHeaderFormats wsAft
+
+    ' 元データ列数（差分列/PK_KEY列を除外）
+    Dim baseCol As Long
+    baseCol = GetBaseDataLastCol(wsAft)
+
+    ' PK列・比較列（aft 定義が正）
+    Dim pkCols As Collection, cmpCols As Collection
+    Set pkCols = GetPKColumns(wsAft, baseCol)
+    Set cmpCols = GetCompareColumns(wsAft, baseCol)
+
+    If pkCols.Count = 0 Then Err.Raise vbObjectError + 1, , "PK列（3行目）が検出できません。"
+    If cmpCols.Count = 0 Then Err.Raise vbObjectError + 2, , "比較対象列（4行目）が検出できません。"
+
+    ' PK_KEY 列を用意（aft/bef/master）※値直書き（式は使わない）
+    Dim colKeyAft As Long, colKeyBef As Long, colKeyMas As Long
+    colKeyAft = EnsurePKKeyColumn_ValueWrite(wsAft, GetBaseDataLastCol(wsAft), pkCols)
+    colKeyBef = EnsurePKKeyColumn_ValueWrite(wsBef, GetBaseDataLastCol(wsBef), pkCols)
+    colKeyMas = EnsurePKKeyColumn_ValueWrite(wsMas, GetBaseDataLastCol(wsMas), pkCols)
+
+    ' 判定結果列（aft）
+    Dim colResBef As Long, colResMas As Long
+    colResBef = EnsureResultColumn(wsAft, HDR_BEF_RES)
+    colResMas = EnsureResultColumn(wsAft, HDR_MAS_RES)
+
+    ' 判定用数式（leader が追える式：PK_KEY + MATCH）
+    GenerateJudgeFormulas wsAft, wsBef, wsMas, cmpCols, colKeyAft, colKeyBef, colKeyMas, colResBef, colResMas
+
+    ' 計算
+    Application.Calculate
+
+    ' 変更セルの標紅 + コメント（bef/aft/master）
+    ApplyHighlightsAndComments wsAft, wsBef, wsMas, cmpCols, colKeyAft, colKeyBef, colKeyMas
+
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "差分検証（新規／変更／OK）＋標紅＋コメント付与 が完了しました。", vbInformation
+    Exit Sub
+
+EH:
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    MsgBox "エラー: " & Err.Description, vbCritical
+
+End Sub
+
+'==================================================
+' 旧結果クリア（1～4行目は保持）
+'==================================================
+Private Sub ClearOldResult_KeepHeaderFormats(ws As Worksheet)
+
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    If lastRow >= 5 Then
+        ws.Range(ws.Cells(5, 1), ws.Cells(lastRow, lastCol)).Interior.ColorIndex = xlNone
+        On Error Resume Next
+        ws.Range(ws.Cells(5, 1), ws.Cells(lastRow, lastCol)).ClearComments
+        On Error GoTo 0
+    End If
+
+    ' 末尾に判定列があれば削除（2列）
+    Dim lc As Long
+    lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If ws.Cells(1, lc).Value = HDR_MAS_RES Then
+        ws.Columns(lc).Clear
+        ws.Columns(lc - 1).Clear
+    End If
+
+    ' 末尾に PK_KEY があれば削除（残骸対策）
+    lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If ws.Cells(1, lc).Value = HDR_PKKEY Then
+        ws.Columns(lc).Clear
+    End If
+
+End Sub
+
+'==================================================
+' 元データ最終列（判定列/PK_KEY列を除外）
+'==================================================
+Private Function GetBaseDataLastCol(ws As Worksheet) As Long
+    Dim lc As Long
+    lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If ws.Cells(1, lc).Value = HDR_MAS_RES Then lc = lc - 2
+    If ws.Cells(1, lc).Value = HDR_PKKEY Then lc = lc - 1
+    GetBaseDataLastCol = lc
+End Function
+
+'==================================================
+' PK列（3行目）
+'==================================================
+Private Function GetPKColumns(ws As Worksheet, lastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(ws.Cells(3, c).Value) <> "" Then col.Add c
+    Next c
+    Set GetPKColumns = col
+End Function
+
+'==================================================
+' 比較対象列（4行目）
+'==================================================
+Private Function GetCompareColumns(ws As Worksheet, lastCol As Long) As Collection
+    Dim col As New Collection
+    Dim c As Long
+    For c = 1 To lastCol
+        If Trim(ws.Cells(4, c).Value) <> "" Then col.Add c
+    Next c
+    Set GetCompareColumns = col
+End Function
+
+'==================================================
+' PK_KEY列を用意（値直書き・非表示）
+'==================================================
+Private Function EnsurePKKeyColumn_ValueWrite(ws As Worksheet, baseCol As Long, pkCols As Collection) As Long
+
+    Dim lc As Long
+    lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If ws.Cells(1, lc).Value = HDR_PKKEY Then
+        EnsurePKKeyColumn_ValueWrite = lc
+        Exit Function
+    End If
+
+    Dim colKey As Long
+    colKey = baseCol + 1
+
+    ws.Cells(1, colKey).Value = HDR_PKKEY
+    ws.Cells(2, colKey).Value = ""
+    ws.Cells(3, colKey).Value = ""
+    ws.Cells(4, colKey).Value = ""
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+
+    If lastRow >= 5 Then
+        Dim r As Long
+        For r = 5 To lastRow
+            ws.Cells(r, colKey).Value = BuildPKKeyValue(ws, r, pkCols)
+        Next r
+    End If
+
+    ws.Columns(colKey).Hidden = True
+    EnsurePKKeyColumn_ValueWrite = colKey
+
+End Function
+
+Private Function BuildPKKeyValue(ws As Worksheet, r As Long, pkCols As Collection) As String
+    Dim key As String
+    Dim c As Variant
+    For Each c In pkCols
+        key = key & Trim(CStr(ws.Cells(r, CLng(c)).Value)) & "|"
+    Next c
+    If Len(key) > 0 Then key = Left$(key, Len(key) - 1)
+    BuildPKKeyValue = key
+End Function
+
+'==================================================
+' 結果列を用意（無ければ追加）
+'==================================================
+Private Function EnsureResultColumn(ws As Worksheet, header As String) As Long
+    Dim lc As Long
+    lc = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If ws.Cells(1, lc).Value = header Then
+        EnsureResultColumn = lc
+        Exit Function
+    End If
+    ws.Cells(1, lc + 1).Value = header
+    EnsureResultColumn = lc + 1
+End Function
+
+'==================================================
+' 判定用数式生成（新規／変更／OK）
+' ※PK_KEY列を使うので配列数式不要、1004回避
+'==================================================
+Private Sub GenerateJudgeFormulas( _
+    wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet, _
+    cmpCols As Collection, _
+    colKeyAft As Long, colKeyBef As Long, colKeyMas As Long, _
+    colResBef As Long, colResMas As Long)
+
+    Dim lastRowAft As Long
+    lastRowAft = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    If lastRowAft < 5 Then Exit Sub
+
+    Dim sep As String
+    sep = Application.International(xlListSeparator) ' "," or ";"
+
+    Dim r As Long
+    For r = 5 To lastRowAft
+        wsAft.Cells(r, colResBef).Formula = _
+            BuildJudgeFormulaForOne(wsAft, wsBef, r, cmpCols, colKeyAft, colKeyBef, sep)
+
+        wsAft.Cells(r, colResMas).Formula = _
+            BuildJudgeFormulaForOne(wsAft, wsMas, r, cmpCols, colKeyAft, colKeyMas, sep)
+    Next r
+
+End Sub
+
+Private Function BuildJudgeFormulaForOne(wsAft As Worksheet, wsCmp As Worksheet, _
+                                        aftRow As Long, cmpCols As Collection, _
+                                        colKeyAft As Long, colKeyCmp As Long, sep As String) As String
+    ' =IFERROR(IF((--(norm(aftC)<>norm(INDEX(cmpC, MATCH(aftKey, cmpKey,0))))+... )>0,"変更","OK"),"新規")
+
+    Dim aftKey As String, cmpKeyRange As String
+    aftKey = wsAft.Cells(aftRow, colKeyAft).Address(False, False)
+    cmpKeyRange = "'" & wsCmp.Name & "'!" & wsCmp.Columns(colKeyCmp).Address
+
+    Dim sumExpr As String
+    sumExpr = ""
+
+    Dim c As Variant
+    For Each c In cmpCols
+        Dim aftCell As String
+        aftCell = wsAft.Cells(aftRow, CLng(c)).Address(False, False)
+
+        Dim cmpColRange As String
+        cmpColRange = "'" & wsCmp.Name & "'!" & wsCmp.Columns(CLng(c)).Address
+
+        Dim idxExpr As String
+        idxExpr = "INDEX(" & cmpColRange & sep & "MATCH(" & aftKey & sep & cmpKeyRange & sep & "0))"
+
+        ' 正規化して比較（TRIM + ""& で文字列化）
+        Dim cond As String
+        cond = "--(TRIM(" & """" & """&" & aftCell & ")<>TRIM(" & """" & """&" & idxExpr & "))"
+        sumExpr = sumExpr & cond & "+"
+    Next c
+
+    If sumExpr = "" Then
+        BuildJudgeFormulaForOne = "=""OK"""
+        Exit Function
+    End If
+
+    sumExpr = Left$(sumExpr, Len(sumExpr) - 1)
+    BuildJudgeFormulaForOne = "=IFERROR(IF((" & sumExpr & ")>0" & sep & """変更""" & sep & """OK"")" & sep & """新規"")"
+End Function
+
+'==================================================
+' 変更セルの標紅 + コメント（bef/aft/master）
+'==================================================
+Private Sub ApplyHighlightsAndComments( _
+    wsAft As Worksheet, wsBef As Worksheet, wsMas As Worksheet, _
+    cmpCols As Collection, _
+    colKeyAft As Long, colKeyBef As Long, colKeyMas As Long)
+
+    Dim mapBef As Object, mapMas As Object
+    Set mapBef = CreateObject("Scripting.Dictionary")
+    Set mapMas = CreateObject("Scripting.Dictionary")
+
+    BuildKeyRowMap wsBef, colKeyBef, mapBef
+    BuildKeyRowMap wsMas, colKeyMas, mapMas
+
+    Dim lastRowAft As Long
+    lastRowAft = wsAft.Cells(wsAft.Rows.Count, 1).End(xlUp).Row
+    If lastRowAft < 5 Then Exit Sub
+
+    Dim r As Long, c As Variant
+    For r = 5 To lastRowAft
+
+        Dim key As String
+        key = CStr(wsAft.Cells(r, colKeyAft).Value)
+
+        Dim befRow As Long, masRow As Long
+        befRow = IIf(mapBef.Exists(key), CLng(mapBef(key)), 0)
+        masRow = IIf(mapMas.Exists(key), CLng(mapMas(key)), 0)
+
+        For Each c In cmpCols
+
+            Dim aftVal As String, befVal As String, masVal As String
+            aftVal = Norm(wsAft.Cells(r, CLng(c)).Value)
+
+            If befRow > 0 Then
+                befVal = Norm(wsBef.Cells(befRow, CLng(c)).Value)
+            Else
+                befVal = "(なし)"
+            End If
+
+            If masRow > 0 Then
+                masVal = Norm(wsMas.Cells(masRow, CLng(c)).Value)
+            Else
+                masVal = "(なし)"
+            End If
+
+            Dim diffBef As Boolean, diffMas As Boolean
+            diffBef = False: diffMas = False
+            If befRow > 0 Then diffBef = (aftVal <> befVal)
+            If masRow > 0 Then diffMas = (aftVal <> masVal)
+
+            If diffBef Or diffMas Then
+                With wsAft.Cells(r, CLng(c))
+                    .Interior.Color = RGB(255, 180, 180)
+
+                    On Error Resume Next
+                    .ClearComments
+                    On Error GoTo 0
+
+                    .AddComment _
+                        "bef : " & befVal & vbCrLf & _
+                        "aft : " & aftVal & vbCrLf & _
+                        "master : " & masVal
+                End With
+            End If
+
+        Next c
+    Next r
+
+End Sub
+
+Private Sub BuildKeyRowMap(ws As Worksheet, colKey As Long, dict As Object)
+    dict.RemoveAll
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 5 Then Exit Sub
+
+    Dim r As Long, k As String
+    For r = 5 To lastRow
+        k = CStr(ws.Cells(r, colKey).Value)
+        If Len(k) > 0 Then
+            If Not dict.Exists(k) Then dict.Add k, r
+        End If
+    Next r
+End Sub
+
+Private Function Norm(v As Variant) As String
+    If IsError(v) Then
+        Norm = "#ERR"
+    Else
+        Norm = Trim(CStr(v))
+    End If
+End Function
