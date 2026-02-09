@@ -1,0 +1,44 @@
+@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+
+REM ===== 配置区（改这里）=====
+set "ROOT=C:\Users\U712930\Desktop\xxx"
+set "LIST=%~dp0list.txt"
+set "OUTPUT=%~dp0result.txt"
+REM ===========================
+
+if not exist "%LIST%" (
+  echo 找不到 %LIST%
+  pause
+  exit /b 1
+)
+
+if not exist "%ROOT%" (
+  echo 找不到目录 %ROOT%
+  pause
+  exit /b 1
+)
+
+REM 清空旧结果
+> "%OUTPUT%" echo.
+
+REM 逐行读取关键词
+for /f "usebackq delims=" %%K in ("%LIST%") do (
+  set "KEY=%%K"
+  if not "!KEY!"=="" (
+    echo 正在查找：!KEY!
+
+    REM 递归枚举所有 java 文件（只看 .java）
+    for /r "%ROOT%" %%P in (*.java) do (
+      echo %%~fP | findstr /i /c:"!KEY!" >nul
+      if not errorlevel 1 (
+        echo !KEY!  %%~fP
+        >> "%OUTPUT%" echo !KEY!  %%~fP
+      )
+    )
+  )
+)
+
+echo.
+echo 完成：结果已保存到 "%OUTPUT%"
+pause
