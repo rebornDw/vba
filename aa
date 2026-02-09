@@ -1,0 +1,1 @@
+for /f "usebackq delims=" %i in ("list.txt") do copy "%i" "D:\target\dir\"
