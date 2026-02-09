@@ -1,0 +1,42 @@
+@echo off
+setlocal
+
+REM ===== 配置区（改这里）=====
+set "ROOT=C:\Users\U712930\Desktop\xxx"
+set "LIST=%~dp0list.txt"
+set "OUTPUT=%~dp0result.txt"
+REM ===========================
+
+if not exist "%LIST%" (
+  echo 找不到 %LIST%
+  pause
+  exit /b 1
+)
+
+if not exist "%ROOT%" (
+  echo 找不到目录 %ROOT%
+  pause
+  exit /b 1
+)
+
+REM 清空旧结果
+> "%OUTPUT%" echo.
+
+REM 逐行读取关键词
+for /f "usebackq delims=" %%K in ("%LIST%") do (
+  if not "%%K"=="" (
+    echo 正在查找：%%K
+
+    REM 关键：命令必须放在单引号里
+    for /f "delims=" %%P in ('
+      dir /s /b /a-d "%ROOT%\*.java" ^| findstr /i /c:"%%K"
+    ') do (
+      echo %%K  %%P
+      >> "%OUTPUT%" echo %%K  %%P
+    )
+  )
+)
+
+echo.
+echo 完成：结果已保存到 "%OUTPUT%"
+pause
