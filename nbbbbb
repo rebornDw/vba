@@ -1,0 +1,232 @@
+Option Explicit
+
+Sub IF送信目录到详细路径检索_路径从D1_结果新Sheet()
+
+    Dim wbThis As Workbook
+    Dim wsInput As Worksheet
+    Dim wsOut As Worksheet
+    
+    Dim wbSrc As Workbook
+    Dim wsIndex As Worksheet
+    Dim wsDetail As Worksheet
+    
+    Dim filePath As String
+    Dim lastRowInput As Long
+    Dim outRow As Long
+    Dim i As Long
+    
+    Dim ifID As String
+    Dim c As Range
+    Dim searchRange As Range
+    
+    Dim dirText As String
+    Dim codeText As String
+    Dim detailPath As String
+    
+    Dim newSheetName As String
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    
+    On Error GoTo ERR_HANDLE
+    
+    Set wbThis = ThisWorkbook
+    Set wsInput = wbThis.Sheets("Sheet1")
+    
+    '从 D1 读取被检索文件路径
+    filePath = Trim(CStr(wsInput.Range("D1").Value))
+    
+    If filePath = "" Then
+        MsgBox "D1 里没有文件路径。", vbExclamation
+        GoTo SAFE_EXIT
+    End If
+    
+    If Dir(filePath) = "" Then
+        MsgBox "找不到文件：" & vbCrLf & filePath, vbExclamation
+        GoTo SAFE_EXIT
+    End If
+    
+    '每次生成一个新的结果sheet
+    newSheetName = GetNewResultSheetName(wbThis)
+    Set wsOut = wbThis.Sheets.Add(After:=wbThis.Sheets(wbThis.Sheets.Count))
+    wsOut.Name = newSheetName
+    
+    wsOut.Cells(1, 1).Value = "IF文件ID"
+    wsOut.Cells(1, 2).Value = "目录"
+    wsOut.Cells(1, 3).Value = "详细结果"
+    
+    outRow = 2
+    
+    Set wbSrc = Workbooks.Open(filePath, ReadOnly:=True)
+    Set wsIndex = wbSrc.Sheets(1)   '目录页
+    Set wsDetail = wbSrc.Sheets(2)  '详细页
+    
+    lastRowInput = wsInput.Cells(wsInput.Rows.Count, "A").End(xlUp).Row
+    Set searchRange = wsIndex.UsedRange
+    
+    For i = 2 To lastRowInput
+        
+        ifID = Trim(CStr(wsInput.Cells(i, "A").Value))
+        
+        If ifID <> "" Then
+            
+            For Each c In searchRange.Cells
+                
+                If Not IsError(c.Value) Then
+                    dirText = Trim(CStr(c.Value))
+                    
+                    If dirText <> "" Then
+                        
+                        '命中IF文件ID
+                        If InStr(1, dirText, ifID, vbTextCompare) > 0 Then
+                            
+                            '只要送信，不要受信
+                            If InStr(1, dirText, "送信", vbTextCompare) > 0 _
+                               And InStr(1, dirText, "受信", vbTextCompare) = 0 Then
+                                
+                                codeText = GetCodeFromDirectoryText(dirText)
+                                detailPath = ""
+                                
+                                If codeText <> "" Then
+                                    detailPath = FindNamePathByCode(wsDetail, codeText)
+                                End If
+                                
+                                wsOut.Cells(outRow, 1).Value = ifID
+                                wsOut.Cells(outRow, 2).Value = dirText
+                                wsOut.Cells(outRow, 3).Value = detailPath
+                                
+                                outRow = outRow + 1
+                            End If
+                        End If
+                    End If
+                End If
+            Next c
+        End If
+    Next i
+    
+    wbSrc.Close SaveChanges:=False
+    
+    wsOut.Columns("A:C").EntireColumn.AutoFit
+    
+    MsgBox "检索完成。结果已生成到Sheet：" & wsOut.Name, vbInformation
+    
+SAFE_EXIT:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Exit Sub
+
+ERR_HANDLE:
+    MsgBox "发生错误：" & Err.Description, vbExclamation
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
+    Resume SAFE_EXIT
+
+End Sub
+
+
+'-----------------------------------
+' 自动生成新的结果sheet名
+' 例如：结果_001、结果_002...
+'-----------------------------------
+Private Function GetNewResultSheetName(ByVal wb As Workbook) As String
+    
+    Dim i As Long
+    Dim nm As String
+    
+    For i = 1 To 999
+        nm = "结果_" & Format(i, "000")
+        If Not SheetExists(wb, nm) Then
+            GetNewResultSheetName = nm
+            Exit Function
+        End If
+    Next i
+    
+    GetNewResultSheetName = "结果_" & Format(Timer, "0")
+    
+End Function
+
+
+'-----------------------------------
+' 判断sheet是否存在
+'-----------------------------------
+Private Function SheetExists(ByVal wb As Workbook, ByVal sheetName As String) As Boolean
+    
+    Dim ws As Worksheet
+    
+    On Error Resume Next
+    Set ws = wb.Sheets(sheetName)
+    SheetExists = Not ws Is Nothing
+    Set ws = Nothing
+    On Error GoTo 0
+    
+End Function
+
+
+'-----------------------------------
+' 从目录字符串中提取编号
+' 例如：
+' N-SB11-H-R0071 - 【HULFT送信処理 IFSB11003】
+' -> N-SB11-H-R0071
+'-----------------------------------
+Private Function GetCodeFromDirectoryText(ByVal txt As String) As String
+    
+    Dim p As Long
+    
+    txt = Trim(txt)
+    p = InStr(txt, " - ")
+    
+    If p > 0 Then
+        GetCodeFromDirectoryText = Trim(Left(txt, p - 1))
+    Else
+        GetCodeFromDirectoryText = ""
+    End If
+    
+End Function
+
+
+'-----------------------------------
+' 在详细页中查找对应编号的 Name:/... 路径
+' 返回：
+' Name:/HON_20250603/p/G_SB21/...
+'-----------------------------------
+Private Function FindNamePathByCode(ByVal ws As Worksheet, ByVal codeText As String) As String
+    
+    Dim rng As Range
+    Dim found As Range
+    Dim firstAddr As String
+    Dim cellText As String
+    
+    Set rng = ws.UsedRange
+    
+    Set found = rng.Find(What:=codeText, _
+                         LookIn:=xlValues, _
+                         LookAt:=xlPart, _
+                         SearchOrder:=xlByRows, _
+                         SearchDirection:=xlNext, _
+                         MatchCase:=False)
+    
+    If found Is Nothing Then
+        FindNamePathByCode = ""
+        Exit Function
+    End If
+    
+    firstAddr = found.Address
+    
+    Do
+        cellText = Trim(CStr(found.Value))
+        
+        If LCase(Left(cellText, 5)) = "name:" Then
+            FindNamePathByCode = cellText
+            Exit Function
+        End If
+        
+        Set found = rng.FindNext(found)
+        If found Is Nothing Then Exit Do
+        
+    Loop While found.Address <> firstAddr
+    
+    FindNamePathByCode = ""
+    
+End Function
