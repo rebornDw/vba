@@ -1,0 +1,108 @@
+Private Sub FormatWorkPlan(ByVal ws As Worksheet, ByVal lastDataRow As Long)
+
+    Dim lastCol As Long
+    Dim rngLeft As Range
+    Dim rngGantt As Range
+    Dim c As Long
+    Dim r As Long
+    
+    If lastDataRow < 2 Then Exit Sub
+    
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < PLAN_GANTT_START_COL Then lastCol = PLAN_GANTT_START_COL
+    
+    Set rngLeft = ws.Range(ws.Cells(1, 1), ws.Cells(lastDataRow, 8))
+    Set rngGantt = ws.Range(ws.Cells(1, PLAN_GANTT_START_COL), ws.Cells(lastDataRow, lastCol))
+    
+    '========================
+    ' A:H 左侧区域
+    '========================
+    With rngLeft
+        .VerticalAlignment = xlCenter
+        .HorizontalAlignment = xlLeft
+        .WrapText = False
+        .Font.Size = 10
+    End With
+    
+    '========================
+    ' Gantt 区域
+    '========================
+    With rngGantt
+        .VerticalAlignment = xlTop
+        .HorizontalAlignment = xlLeft
+        .WrapText = True
+        .Font.Size = 8
+    End With
+    
+    '========================
+    ' 表头
+    '========================
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol))
+        .Font.Bold = True
+        .VerticalAlignment = xlCenter
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(220, 230, 241)
+    End With
+    
+    '========================
+    ' 列宽（左侧）
+    '========================
+    ws.Columns("A").ColumnWidth = 10
+    ws.Columns("B").ColumnWidth = 12
+    ws.Columns("C").ColumnWidth = 10
+    ws.Columns("D").ColumnWidth = 28
+    ws.Columns("E").ColumnWidth = 11
+    ws.Columns("F").ColumnWidth = 11
+    ws.Columns("G").ColumnWidth = 11
+    ws.Columns("H").ColumnWidth = 11
+    
+    '========================
+    ' Gantt列宽统一
+    '========================
+    For c = PLAN_GANTT_START_COL To lastCol
+        ws.Columns(c).ColumnWidth = 12
+    Next c
+    
+    '========================
+    ' 行高自动（防止重叠）
+    '========================
+    ws.Rows("2:" & lastDataRow).AutoFit
+    
+    '========================
+    ' Gantt 边框统一
+    '========================
+    With rngGantt.Borders
+        .LineStyle = xlContinuous
+        .Color = RGB(200, 200, 200)
+        .Weight = xlThin
+    End With
+    
+    '========================
+    ' 清理空白但被染色的格子
+    '========================
+    For r = 2 To lastDataRow
+        For c = PLAN_GANTT_START_COL To lastCol
+            If Trim(CStr(ws.Cells(r, c).Value)) = "" Then
+                ws.Cells(r, c).Interior.ColorIndex = xlNone
+            End If
+        Next c
+    Next r
+    
+    '========================
+    ' 冻结 A:H
+    '========================
+    ws.Activate
+    ws.Range("I2").Select
+    ActiveWindow.FreezePanes = False
+    ActiveWindow.FreezePanes = True
+    
+    '========================
+    ' A:H 加过滤器
+    '========================
+    If ws.AutoFilterMode Then
+        ws.AutoFilterMode = False
+    End If
+    
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, 8)).AutoFilter
+
+End Sub
