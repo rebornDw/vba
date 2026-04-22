@@ -1,0 +1,676 @@
+Option Explicit
+
+'====================================================
+' 画面/文件设置
+'====================================================
+Private Const SHEET_WORK_PLAN As String = "作業計画"
+Private Const SHEET_WORK_HOURS As String = "作業工数計画"
+Private Const MASTER_PATH_CELL As String = "D2"
+
+Private Const SHEET_HOSHU_MASTER As String = "保守マスタ"
+Private Const SHEET_KAIHATSU_MASTER As String = "開発マスタ"
+
+'====================================================
+' master列定义
+'====================================================
+Private Const COL_MASTER_MGNO As Long = 3        ' C : 管理番号
+Private Const COL_MASTER_EDABAN As Long = 4      ' D : 枝番
+Private Const COL_MASTER_TASK As Long = 5        ' E : 作業名
+Private Const COL_MASTER_PLAN_START As Long = 7  ' G : 作業開始予定
+Private Const COL_MASTER_PLAN_END As Long = 8    ' H : 作業終了予定
+Private Const COL_MASTER_ACT_START As Long = 9   ' I : 開始実績
+Private Const COL_MASTER_ACT_END As Long = 10    ' J : 終了実績
+
+Private Const COL_MASTER_OKADA As Long = 12      ' L
+Private Const COL_MASTER_KUDO As Long = 13       ' M
+Private Const COL_MASTER_YOSHIDA As Long = 14    ' N
+Private Const COL_MASTER_NEMOTO As Long = 15     ' O
+Private Const COL_MASTER_SHIMIZU As Long = 16    ' P
+Private Const COL_MASTER_INAO As Long = 17       ' Q
+Private Const COL_MASTER_WEEK As Long = 22       ' V
+
+'====================================================
+' 作業工数計画 输出区域
+'====================================================
+Private Const HOURS_DATA_START_ROW As Long = 8
+Private Const HOURS_CLEAR_LAST_ROW As Long = 300
+
+Private Const HOURS_COL_COMBINED As Long = 2     ' B
+Private Const HOURS_COL_HOSHU As Long = 12       ' L
+Private Const HOURS_COL_KAIHATSU As Long = 22    ' V
+
+'====================================================
+' 作業計画 输出区域
+'====================================================
+Private Const PLAN_CLEAR_LAST_ROW As Long = 300
+Private Const PLAN_GANTT_START_COL As Long = 9   ' I
+
+'====================================================
+' 主入口
+'====================================================
+Sub 稼働確認()
+
+    Dim wbSrc As Workbook
+    Dim wsHours As Worksheet
+    Dim masterPath As String
+    Dim srcAlreadyOpen As Boolean
+    
+    On Error GoTo ERR_HANDLER
+    
+    Set wsHours = ThisWorkbook.Worksheets(SHEET_WORK_HOURS)
+    
+    masterPath = Trim(CStr(wsHours.Range(MASTER_PATH_CELL).Value))
+    
+    If masterPath = "" Then
+        MsgBox "マスタファイルのパスを入力してください。", vbExclamation
+        Exit Sub
+    End If
+    
+    If Len(Dir(masterPath)) = 0 Then
+        MsgBox "指定されたマスタファイルが見つかりません。" & vbCrLf & masterPath, vbExclamation
+        Exit Sub
+    End If
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+    Set wbSrc = GetOpenedWorkbookByFullName(masterPath)
+    If wbSrc Is Nothing Then
+        Set wbSrc = Workbooks.Open(Filename:=masterPath, ReadOnly:=True)
+        srcAlreadyOpen = False
+    Else
+        srcAlreadyOpen = True
+    End If
+    
+    FillWorkHours wbSrc
+    FillWorkPlan wbSrc
+    
+    MsgBox "更新完了", vbInformation
+
+EXIT_PROC:
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then
+        If srcAlreadyOpen = False Then
+            wbSrc.Close SaveChanges:=False
+        End If
+    End If
+    
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.Calculation = xlCalculationAutomatic
+    Exit Sub
+
+ERR_HANDLER:
+    MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbCritical
+    Resume EXIT_PROC
+
+End Sub
+
+'====================================================
+' 作業工数計画
+'====================================================
+Private Sub FillWorkHours(ByVal wbSrc As Workbook)
+
+    Dim wsOut As Worksheet
+    Dim wsHoshu As Worksheet
+    Dim wsKaihatsu As Worksheet
+    
+    Dim dictHoshu As Object
+    Dim dictKaihatsu As Object
+    Dim dictWeeks As Object
+    Dim arrWeeks As Variant
+    
+    Set wsOut = ThisWorkbook.Worksheets(SHEET_WORK_HOURS)
+    Set wsHoshu = wbSrc.Worksheets(SHEET_HOSHU_MASTER)
+    Set wsKaihatsu = wbSrc.Worksheets(SHEET_KAIHATSU_MASTER)
+    
+    Set dictHoshu = CreateObject("Scripting.Dictionary")
+    Set dictKaihatsu = CreateObject("Scripting.Dictionary")
+    Set dictWeeks = CreateObject("Scripting.Dictionary")
+    
+    ReadHoursSource wsHoshu, dictHoshu, dictWeeks
+    ReadHoursSource wsKaihatsu, dictKaihatsu, dictWeeks
+    
+    ClearHoursData wsOut
+    
+    If dictWeeks.Count = 0 Then Exit Sub
+    
+    arrWeeks = dictWeeks.Keys
+    SortLongArray arrWeeks
+    
+    WriteHoursBlock wsOut, HOURS_COL_COMBINED, arrWeeks, dictHoshu, dictKaihatsu
+    WriteHoursBlock wsOut, HOURS_COL_HOSHU, arrWeeks, dictHoshu, Nothing
+    WriteHoursBlock wsOut, HOURS_COL_KAIHATSU, arrWeeks, dictKaihatsu, Nothing
+
+End Sub
+
+Private Sub ReadHoursSource(ByVal ws As Worksheet, _
+                            ByRef dictData As Object, _
+                            ByRef dictWeeks As Object)
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim weekVal As Variant
+    Dim weekKey As Long
+    
+    Dim okadaW As Double
+    Dim kudoW As Double
+    Dim yoshidaW As Double
+    Dim nemotoW As Double
+    Dim shimizuW As Double
+    Dim inaoW As Double
+    Dim totalW As Double
+    
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    
+    For r = 2 To lastRow
+        
+        weekVal = ws.Cells(r, COL_MASTER_WEEK).Value
+        
+        If Not IsValidDateValue(weekVal) Then
+            GoTo CONTINUE_LOOP
+        End If
+        
+        weekKey = CLng(CDate(weekVal))
+        
+        If Not dictWeeks.Exists(weekKey) Then
+            dictWeeks.Add weekKey, weekKey
+        End If
+        
+        okadaW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_OKADA).Value)
+        kudoW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_KUDO).Value)
+        yoshidaW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_YOSHIDA).Value)
+        nemotoW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_NEMOTO).Value)
+        shimizuW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_SHIMIZU).Value)
+        inaoW = GetPositiveNumeric(ws.Cells(r, COL_MASTER_INAO).Value)
+        
+        totalW = okadaW + kudoW + yoshidaW + nemotoW + shimizuW + inaoW
+        
+        If okadaW <> 0 Then AddHoursValue dictData, weekKey, "OKADA", okadaW
+        If kudoW <> 0 Then AddHoursValue dictData, weekKey, "KUDO", kudoW
+        If yoshidaW <> 0 Then AddHoursValue dictData, weekKey, "YOSHIDA", yoshidaW
+        If nemotoW <> 0 Then AddHoursValue dictData, weekKey, "NEMOTO", nemotoW
+        If shimizuW <> 0 Then AddHoursValue dictData, weekKey, "SHIMIZU", shimizuW
+        If inaoW <> 0 Then AddHoursValue dictData, weekKey, "INAO", inaoW
+        If totalW <> 0 Then AddHoursValue dictData, weekKey, "TOTAL", totalW
+        
+CONTINUE_LOOP:
+    Next r
+
+End Sub
+
+Private Sub AddHoursValue(ByRef dictData As Object, _
+                          ByVal weekKey As Long, _
+                          ByVal itemKey As String, _
+                          ByVal addVal As Double)
+
+    Dim key As String
+    key = CStr(weekKey) & "|" & itemKey
+    
+    If dictData.Exists(key) Then
+        dictData(key) = dictData(key) + addVal
+    Else
+        dictData.Add key, addVal
+    End If
+
+End Sub
+
+Private Sub WriteHoursBlock(ByVal ws As Worksheet, _
+                            ByVal startCol As Long, _
+                            ByVal arrWeeks As Variant, _
+                            ByVal dictMain As Object, _
+                            ByVal dictSub As Object)
+
+    Dim i As Long
+    Dim rowOut As Long
+    Dim weekKey As Long
+    
+    rowOut = HOURS_DATA_START_ROW
+    
+    For i = LBound(arrWeeks) To UBound(arrWeeks)
+        weekKey = CLng(arrWeeks(i))
+        
+        ws.Cells(rowOut, startCol).Value = CDate(weekKey)
+        ws.Cells(rowOut, startCol).NumberFormat = "yy/mm/dd"
+        
+        ws.Cells(rowOut, startCol + 1).Value = GetHoursValue(weekKey, "OKADA", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 2).Value = GetHoursValue(weekKey, "KUDO", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 3).Value = GetHoursValue(weekKey, "YOSHIDA", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 4).Value = GetHoursValue(weekKey, "NEMOTO", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 5).Value = GetHoursValue(weekKey, "SHIMIZU", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 6).Value = GetHoursValue(weekKey, "INAO", dictMain, dictSub)
+        ws.Cells(rowOut, startCol + 7).Value = GetHoursValue(weekKey, "TOTAL", dictMain, dictSub)
+        
+        rowOut = rowOut + 1
+    Next i
+
+End Sub
+
+Private Function GetHoursValue(ByVal weekKey As Long, _
+                               ByVal itemKey As String, _
+                               ByVal dictMain As Object, _
+                               ByVal dictSub As Object) As Double
+    
+    Dim key As String
+    Dim resultVal As Double
+    
+    key = CStr(weekKey) & "|" & itemKey
+    resultVal = 0
+    
+    If Not dictMain Is Nothing Then
+        If dictMain.Exists(key) Then resultVal = resultVal + CDbl(dictMain(key))
+    End If
+    
+    If Not dictSub Is Nothing Then
+        If dictSub.Exists(key) Then resultVal = resultVal + CDbl(dictSub(key))
+    End If
+    
+    GetHoursValue = resultVal
+
+End Function
+
+Private Sub ClearHoursData(ByVal ws As Worksheet)
+
+    ws.Range("B8:I300").ClearContents
+    ws.Range("L8:S300").ClearContents
+    ws.Range("V8:AC300").ClearContents
+
+End Sub
+
+'====================================================
+' 作業計画
+'====================================================
+Private Sub FillWorkPlan(ByVal wbSrc As Workbook)
+
+    Dim wsPlan As Worksheet
+    Dim wsHoshu As Worksheet
+    Dim wsKaihatsu As Worksheet
+    Dim dictPlanRows As Object
+    Dim nextRow As Long
+    
+    Set wsPlan = ThisWorkbook.Worksheets(SHEET_WORK_PLAN)
+    Set wsHoshu = wbSrc.Worksheets(SHEET_HOSHU_MASTER)
+    Set wsKaihatsu = wbSrc.Worksheets(SHEET_KAIHATSU_MASTER)
+    
+    Set dictPlanRows = CreateObject("Scripting.Dictionary")
+    
+    ClearWorkPlanAll wsPlan
+    nextRow = 2
+    
+    FillWorkPlanFromMaster wsHoshu, wsPlan, dictPlanRows, nextRow, "基盤保守"
+    FillWorkPlanFromMaster wsKaihatsu, wsPlan, dictPlanRows, nextRow, "開発"
+    
+    SortWorkPlan wsPlan, nextRow - 1
+    FormatWorkPlan wsPlan, nextRow - 1
+
+End Sub
+
+Private Sub ClearWorkPlanAll(ByVal ws As Worksheet)
+
+    Dim lastCol As Long
+    
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < PLAN_GANTT_START_COL Then lastCol = PLAN_GANTT_START_COL
+    
+    ws.Range(ws.Cells(2, 1), ws.Cells(PLAN_CLEAR_LAST_ROW, 8)).ClearContents
+    ws.Range(ws.Cells(2, PLAN_GANTT_START_COL), ws.Cells(PLAN_CLEAR_LAST_ROW, lastCol)).ClearContents
+    ws.Range(ws.Cells(2, PLAN_GANTT_START_COL), ws.Cells(PLAN_CLEAR_LAST_ROW, lastCol)).Interior.ColorIndex = xlNone
+    
+    If ws.AutoFilterMode Then
+        ws.AutoFilterMode = False
+    End If
+
+End Sub
+
+Private Sub FillWorkPlanFromMaster(ByVal wsSrc As Worksheet, _
+                                   ByVal wsPlan As Worksheet, _
+                                   ByRef dictPlanRows As Object, _
+                                   ByRef nextRow As Long, _
+                                   ByVal syubetsu As String)
+
+    Dim lastRow As Long
+    Dim r As Long
+    
+    Dim mgNo As String
+    Dim edaban As String
+    Dim taskName As String
+    Dim planStart As Variant
+    Dim planEnd As Variant
+    Dim actStart As Variant
+    Dim actEnd As Variant
+    Dim weekVal As Variant
+    
+    Dim targetRow As Long
+    Dim targetCol As Long
+    Dim curText As String
+    
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+    
+    For r = 2 To lastRow
+        
+        mgNo = Trim(CStr(wsSrc.Cells(r, COL_MASTER_MGNO).Value))
+        edaban = Trim(CStr(wsSrc.Cells(r, COL_MASTER_EDABAN).Value))
+        taskName = Trim(CStr(wsSrc.Cells(r, COL_MASTER_TASK).Value))
+        planStart = wsSrc.Cells(r, COL_MASTER_PLAN_START).Value
+        planEnd = wsSrc.Cells(r, COL_MASTER_PLAN_END).Value
+        actStart = wsSrc.Cells(r, COL_MASTER_ACT_START).Value
+        actEnd = wsSrc.Cells(r, COL_MASTER_ACT_END).Value
+        weekVal = wsSrc.Cells(r, COL_MASTER_WEEK).Value
+        
+        If mgNo = "" And edaban = "" And taskName = "" Then GoTo CONTINUE_LOOP
+        
+        targetRow = FindOrCreatePlanRow(dictPlanRows, nextRow, mgNo, edaban, taskName)
+        If targetRow = 0 Then GoTo CONTINUE_LOOP
+        
+        WritePlanBasicInfo wsPlan, targetRow, syubetsu, mgNo, edaban, taskName, planStart, planEnd, actStart, actEnd
+        
+        If IsDate(weekVal) And taskName <> "" Then
+            targetCol = FindWeekColumn(wsPlan, CDate(weekVal))
+            If targetCol > 0 Then
+                curText = Trim(CStr(wsPlan.Cells(targetRow, targetCol).Value))
+                
+                If curText = "" Then
+                    wsPlan.Cells(targetRow, targetCol).Value = taskName
+                    wsPlan.Cells(targetRow, targetCol).Interior.Color = RGB(91, 155, 213)
+                ElseIf InStr(1, curText, taskName, vbTextCompare) = 0 Then
+                    wsPlan.Cells(targetRow, targetCol).Value = curText & vbLf & taskName
+                    wsPlan.Cells(targetRow, targetCol).Interior.Color = RGB(91, 155, 213)
+                Else
+                    wsPlan.Cells(targetRow, targetCol).Interior.Color = RGB(91, 155, 213)
+                End If
+                
+                wsPlan.Cells(targetRow, targetCol).WrapText = True
+            End If
+        End If
+        
+CONTINUE_LOOP:
+    Next r
+
+End Sub
+
+Private Function FindOrCreatePlanRow(ByRef dictPlanRows As Object, _
+                                     ByRef nextRow As Long, _
+                                     ByVal mgNo As String, _
+                                     ByVal edaban As String, _
+                                     ByVal taskName As String) As Long
+
+    Dim key As String
+    
+    key = mgNo & "|" & edaban & "|" & taskName
+    
+    If dictPlanRows.Exists(key) Then
+        FindOrCreatePlanRow = CLng(dictPlanRows(key))
+    Else
+        If nextRow > PLAN_CLEAR_LAST_ROW Then
+            FindOrCreatePlanRow = 0
+            Exit Function
+        End If
+        
+        dictPlanRows.Add key, nextRow
+        FindOrCreatePlanRow = nextRow
+        nextRow = nextRow + 1
+    End If
+
+End Function
+
+Private Sub WritePlanBasicInfo(ByVal ws As Worksheet, _
+                               ByVal targetRow As Long, _
+                               ByVal syubetsu As String, _
+                               ByVal mgNo As String, _
+                               ByVal edaban As String, _
+                               ByVal taskName As String, _
+                               ByVal planStart As Variant, _
+                               ByVal planEnd As Variant, _
+                               ByVal actStart As Variant, _
+                               ByVal actEnd As Variant)
+
+    ws.Cells(targetRow, 1).Value = syubetsu
+    ws.Cells(targetRow, 2).Value = mgNo
+    ws.Cells(targetRow, 3).Value = edaban
+    ws.Cells(targetRow, 4).Value = taskName
+    
+    If IsDate(planStart) Then
+        ws.Cells(targetRow, 5).Value = CDate(planStart)
+        ws.Cells(targetRow, 5).NumberFormat = "yy/mm/dd"
+    Else
+        ws.Cells(targetRow, 5).Value = planStart
+    End If
+    
+    If IsDate(planEnd) Then
+        ws.Cells(targetRow, 6).Value = CDate(planEnd)
+        ws.Cells(targetRow, 6).NumberFormat = "yy/mm/dd"
+    Else
+        ws.Cells(targetRow, 6).Value = planEnd
+    End If
+    
+    If IsDate(actStart) Then
+        ws.Cells(targetRow, 7).Value = CDate(actStart)
+        ws.Cells(targetRow, 7).NumberFormat = "yy/mm/dd"
+    Else
+        ws.Cells(targetRow, 7).Value = actStart
+    End If
+    
+    If IsDate(actEnd) Then
+        ws.Cells(targetRow, 8).Value = CDate(actEnd)
+        ws.Cells(targetRow, 8).NumberFormat = "yy/mm/dd"
+    Else
+        ws.Cells(targetRow, 8).Value = actEnd
+    End If
+
+End Sub
+
+Private Function FindWeekColumn(ByVal ws As Worksheet, ByVal weekDate As Date) As Long
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim v As Variant
+    
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    For c = PLAN_GANTT_START_COL To lastCol
+        v = ws.Cells(1, c).Value
+        If IsDate(v) Then
+            If CLng(CDate(v)) = CLng(weekDate) Then
+                FindWeekColumn = c
+                Exit Function
+            End If
+        End If
+    Next c
+    
+    FindWeekColumn = 0
+
+End Function
+
+Private Sub SortWorkPlan(ByVal ws As Worksheet, ByVal lastDataRow As Long)
+
+    Dim lastCol As Long
+    Dim helperCol As Long
+    Dim r As Long
+    
+    If lastDataRow < 2 Then Exit Sub
+    
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < PLAN_GANTT_START_COL Then lastCol = PLAN_GANTT_START_COL
+    
+    helperCol = lastCol + 1
+    
+    For r = 2 To lastDataRow
+        If IsDate(ws.Cells(r, 5).Value) Then
+            ws.Cells(r, helperCol).Value = CLng(CDate(ws.Cells(r, 5).Value))
+        Else
+            ws.Cells(r, helperCol).Value = 99999999
+        End If
+    Next r
+    
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, helperCol), ws.Cells(lastDataRow, helperCol)), _
+                        SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        
+        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastDataRow, helperCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+    
+    ws.Range(ws.Cells(2, helperCol), ws.Cells(lastDataRow, helperCol)).ClearContents
+
+End Sub
+
+Private Sub FormatWorkPlan(ByVal ws As Worksheet, ByVal lastDataRow As Long)
+
+    Dim lastCol As Long
+    Dim rngLeft As Range
+    Dim rngGantt As Range
+    Dim c As Long
+    Dim r As Long
+    
+    If lastDataRow < 2 Then Exit Sub
+    
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < PLAN_GANTT_START_COL Then lastCol = PLAN_GANTT_START_COL
+    
+    Set rngLeft = ws.Range(ws.Cells(1, 1), ws.Cells(lastDataRow, 8))
+    Set rngGantt = ws.Range(ws.Cells(1, PLAN_GANTT_START_COL), ws.Cells(lastDataRow, lastCol))
+    
+    ' 左侧 A:H
+    With rngLeft
+        .VerticalAlignment = xlCenter
+        .HorizontalAlignment = xlLeft
+        .WrapText = False
+        .Font.Size = 10
+    End With
+    
+    ' 右侧 gantt
+    With rngGantt
+        .VerticalAlignment = xlTop
+        .HorizontalAlignment = xlLeft
+        .WrapText = True
+        .Font.Size = 8
+    End With
+    
+    ' 表头
+    With ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol))
+        .Font.Bold = True
+        .VerticalAlignment = xlCenter
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(220, 230, 241)
+    End With
+    
+    ' 左侧列宽
+    ws.Columns("A").ColumnWidth = 10
+    ws.Columns("B").ColumnWidth = 12
+    ws.Columns("C").ColumnWidth = 10
+    ws.Columns("D").ColumnWidth = 28
+    ws.Columns("E").ColumnWidth = 11
+    ws.Columns("F").ColumnWidth = 11
+    ws.Columns("G").ColumnWidth = 11
+    ws.Columns("H").ColumnWidth = 11
+    
+    ' gantt 区域列宽统一
+    For c = PLAN_GANTT_START_COL To lastCol
+        ws.Columns(c).ColumnWidth = 12
+    Next c
+    
+    ' 行高自动
+    ws.Rows("2:" & lastDataRow).AutoFit
+    
+    ' gantt 边框统一
+    With rngGantt.Borders
+        .LineStyle = xlContinuous
+        .Color = RGB(200, 200, 200)
+        .Weight = xlThin
+    End With
+    
+    ' 清理空白但被染色的格子
+    For r = 2 To lastDataRow
+        For c = PLAN_GANTT_START_COL To lastCol
+            If Trim(CStr(ws.Cells(r, c).Value)) = "" Then
+                ws.Cells(r, c).Interior.ColorIndex = xlNone
+            End If
+        Next c
+    Next r
+    
+    ' A:H 加筛选
+    If ws.AutoFilterMode Then
+        ws.AutoFilterMode = False
+    End If
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, 8)).AutoFilter
+    
+    ' 冻结 A:H
+    ws.Activate
+    ActiveWindow.FreezePanes = False
+    ws.Range("I2").Select
+    ActiveWindow.FreezePanes = True
+
+End Sub
+
+'====================================================
+' 共通
+'====================================================
+Private Function IsValidDateValue(ByVal v As Variant) As Boolean
+
+    If IsError(v) Then
+        IsValidDateValue = False
+    ElseIf IsDate(v) Then
+        IsValidDateValue = True
+    Else
+        IsValidDateValue = False
+    End If
+
+End Function
+
+Private Function GetPositiveNumeric(ByVal v As Variant) As Double
+
+    If IsError(v) Then
+        GetPositiveNumeric = 0
+    ElseIf IsNumeric(v) Then
+        If CDbl(v) <> 0 Then
+            GetPositiveNumeric = CDbl(v)
+        Else
+            GetPositiveNumeric = 0
+        End If
+    Else
+        GetPositiveNumeric = 0
+    End If
+
+End Function
+
+Private Sub SortLongArray(ByRef arr As Variant)
+
+    Dim i As Long
+    Dim j As Long
+    Dim tmp As Variant
+    
+    For i = LBound(arr) To UBound(arr) - 1
+        For j = i + 1 To UBound(arr)
+            If CLng(arr(i)) > CLng(arr(j)) Then
+                tmp = arr(i)
+                arr(i) = arr(j)
+                arr(j) = tmp
+            End If
+        Next j
+    Next i
+
+End Sub
+
+Private Function GetOpenedWorkbookByFullName(ByVal fullPath As String) As Workbook
+
+    Dim wb As Workbook
+    
+    For Each wb In Application.Workbooks
+        On Error Resume Next
+        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
+            Set GetOpenedWorkbookByFullName = wb
+            Exit Function
+        End If
+        On Error GoTo 0
+    Next wb
+    
+    Set GetOpenedWorkbookByFullName = Nothing
+
+End Function
