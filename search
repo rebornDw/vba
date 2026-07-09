@@ -1,0 +1,18 @@
+$baseFolder = "C:\Users\U712930\Desktop\source\fsgit\smbcfs\00_ソース\smbcfs-project-biz"
+$searchFolder = "C:\另一个文件夹"
+$destBase = "$env:USERPROFILE\Desktop\A"
+
+$files = Get-ChildItem -Path $baseFolder -Recurse -File
+
+foreach ($file in $files) {
+    $relativePath = $file.FullName.Substring($baseFolder.Length).TrimStart('\')
+    $targetFile = Join-Path $searchFolder $relativePath
+
+    if (Test-Path $targetFile) {
+        $destFile = Join-Path $destBase $relativePath
+        $destDir = Split-Path $destFile -Parent
+
+        New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+        Copy-Item -Path $targetFile -Destination $destFile -Force
+    }
+}
