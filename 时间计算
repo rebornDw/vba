@@ -1,0 +1,274 @@
+Option Explicit
+
+Sub ファイル処理時間集計()
+
+    Dim wsData As Worksheet
+    Dim wsResult As Worksheet
+    
+    Dim lastDataRow As Long
+    Dim lastResultRow As Long
+    
+    Dim dict As Object
+    Dim values As Variant
+    
+    Dim rowIndex As Long
+    Dim fileId As String
+    
+    Dim startTime As Double
+    Dim endTime As Double
+    Dim processTime As Double
+    Dim dataSize As Double
+    
+    Set wsData = ThisWorkbook.Worksheets("data")
+    Set wsResult = ThisWorkbook.Worksheets("結果")
+    
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    
+    '==========================================
+    ' dataシートの最終行を取得
+    '==========================================
+    lastDataRow = wsData.Cells(wsData.Rows.Count, "A").End(xlUp).Row
+    
+    
+    '==========================================
+    ' dataシートを読み込み
+    '==========================================
+    For rowIndex = 1 To lastDataRow
+        
+        fileId = Trim(CStr(wsData.Cells(rowIndex, "A").Value))
+        
+        If fileId <> "" _
+           And IsDate(wsData.Cells(rowIndex, "B").Value) _
+           And IsDate(wsData.Cells(rowIndex, "C").Value) Then
+            
+            startTime = CDbl(wsData.Cells(rowIndex, "B").Value)
+            endTime = CDbl(wsData.Cells(rowIndex, "C").Value)
+            
+            
+            '------------------------------------------
+            ' 日付をまたぐ場合の対応
+            ' 例：23:59:58 ～ 00:00:03
+            '------------------------------------------
+            If endTime < startTime Then
+                endTime = endTime + 1
+            End If
+            
+            
+            '------------------------------------------
+            ' 処理時間を秒単位で計算
+            '------------------------------------------
+            processTime = (endTime - startTime) * 86400
+            
+            
+            '------------------------------------------
+            ' データ量を取得
+            '------------------------------------------
+            If IsNumeric(wsData.Cells(rowIndex, "D").Value) Then
+                dataSize = CDbl(wsData.Cells(rowIndex, "D").Value)
+            Else
+                dataSize = 0
+            End If
+            
+            
+            '==================================================
+            ' values の内容
+            '
+            ' 0 : MAX開始時間
+            ' 1 : MAX終了時間
+            ' 2 : MIN開始時間
+            ' 3 : MIN終了時間
+            ' 4 : 開始時間合計
+            ' 5 : 終了時間合計
+            ' 6 : MAX処理時間
+            ' 7 : MIN処理時間
+            ' 8 : 処理時間合計
+            ' 9 : 処理回数
+            '10 : データ量合計
+            '==================================================
+            
+            If Not dict.Exists(fileId) Then
+                
+                values = Array( _
+                    startTime, _
+                    endTime, _
+                    startTime, _
+                    endTime, _
+                    startTime, _
+                    endTime, _
+                    processTime, _
+                    processTime, _
+                    processTime, _
+                    1#, _
+                    dataSize)
+                
+                dict.Add fileId, values
+                
+            Else
+                
+                values = dict(fileId)
+                
+                
+                'MAX開始時間
+                If startTime > values(0) Then
+                    values(0) = startTime
+                End If
+                
+                
+                'MAX終了時間
+                If endTime > values(1) Then
+                    values(1) = endTime
+                End If
+                
+                
+                'MIN開始時間
+                If startTime < values(2) Then
+                    values(2) = startTime
+                End If
+                
+                
+                'MIN終了時間
+                If endTime < values(3) Then
+                    values(3) = endTime
+                End If
+                
+                
+                '開始時間合計
+                values(4) = values(4) + startTime
+                
+                
+                '終了時間合計
+                values(5) = values(5) + endTime
+                
+                
+                'MAX処理時間
+                If processTime > values(6) Then
+                    values(6) = processTime
+                End If
+                
+                
+                'MIN処理時間
+                If processTime < values(7) Then
+                    values(7) = processTime
+                End If
+                
+                
+                '処理時間合計
+                values(8) = values(8) + processTime
+                
+                
+                '処理回数
+                values(9) = values(9) + 1
+                
+                
+                'データ量合計
+                values(10) = values(10) + dataSize
+                
+                
+                dict(fileId) = values
+                
+            End If
+            
+        End If
+        
+    Next rowIndex
+    
+    
+    '==================================================
+    ' 結果シートへ出力
+    '==================================================
+    
+    lastResultRow = wsResult.Cells(wsResult.Rows.Count, "A").End(xlUp).Row
+    
+    
+    For rowIndex = 2 To lastResultRow
+        
+        fileId = Trim(CStr(wsResult.Cells(rowIndex, "A").Value))
+        
+        If dict.Exists(fileId) Then
+            
+            values = dict(fileId)
+            
+            
+            'B列：MAX開始時間
+            wsResult.Cells(rowIndex, "B").Value = values(0)
+            
+            
+            'C列：MAX終了時間
+            wsResult.Cells(rowIndex, "C").Value = values(1)
+            
+            
+            'D列：MIN開始時間
+            wsResult.Cells(rowIndex, "D").Value = values(2)
+            
+            
+            'E列：MIN終了時間
+            wsResult.Cells(rowIndex, "E").Value = values(3)
+            
+            
+            'F列：AVG開始時間
+            wsResult.Cells(rowIndex, "F").Value = _
+                values(4) / values(9)
+            
+            
+            'G列：AVG終了時間
+            wsResult.Cells(rowIndex, "G").Value = _
+                values(5) / values(9)
+            
+            
+            'H列：MAX処理時間（秒）
+            wsResult.Cells(rowIndex, "H").Value = values(6)
+            
+            
+            'I列：MIN処理時間（秒）
+            wsResult.Cells(rowIndex, "I").Value = values(7)
+            
+            
+            'J列：AVG処理時間（秒）
+            wsResult.Cells(rowIndex, "J").Value = _
+                values(8) / values(9)
+            
+            
+            'K列：AVG(DATA / TIME)
+            'データ量合計 ÷ 処理時間合計
+            If values(8) > 0 Then
+                
+                wsResult.Cells(rowIndex, "K").Value = _
+                    values(10) / values(8)
+                
+            Else
+                
+                wsResult.Cells(rowIndex, "K").Value = 0
+                
+            End If
+            
+            
+        Else
+            
+            'dataシートに対象ファイルIDが存在しない場合
+            wsResult.Range("B" & rowIndex & ":K" & rowIndex).ClearContents
+            
+        End If
+        
+    Next rowIndex
+    
+    
+    '==================================================
+    ' 表示形式設定
+    '==================================================
+    
+    '開始時間・終了時間
+    wsResult.Range("B2:G" & lastResultRow).NumberFormat = "hh:mm:ss"
+    
+    
+    '処理時間（秒）
+    wsResult.Range("H2:J" & lastResultRow).NumberFormat = "0.000"
+    
+    
+    'AVG(DATA / TIME)
+    wsResult.Range("K2:K" & lastResultRow).NumberFormat = "0.000"
+    
+    
+    MsgBox "集計が完了しました。", vbInformation
+
+End Sub
