@@ -1,0 +1,1133 @@
+
+Option Explicit
+
+'============================================================
+' HULFT 月間処理実績比較ツール
+'
+' ツール画面：
+'   7行目  LSTファイル格納フォルダ
+'   9行目  テンプレートファイル
+'   11行目 出力先フォルダ
+'
+' 対象ファイル：
+'   202607_pmaxnt01_rcv_v5.lst
+'   202607_pmaxnt01_snd_v5.lst
+'   202608_pmaxnt01_rcv_v5.lst
+'   202608_pmaxnt01_snd_v5.lst
+'
+' 対象シート：
+'   月間処理実績比較（7⇔8）
+'   7月明細データ
+'   8月明細データ
+'
+' A列：連番
+' B列：送信／受信
+' G列：HULFT-ID
+'
+' A～G列の既存データは変更しない
+'============================================================
+
+Public Sub 月間処理実績比較出力()
+
+    Dim wsTool As Worksheet
+
+    Dim folderPath As String
+    Dim templatePath As String
+    Dim outputFolder As String
+    Dim outputPath As String
+
+    Dim wb As Workbook
+
+    Dim wsCompare As Worksheet
+    Dim wsJuly As Worksheet
+    Dim wsAugust As Worksheet
+
+    Dim dic As Object
+    Dim fso As Object
+
+    Dim fileNames As Variant
+
+    Dim i As Long
+    Dim totalCount As Long
+
+    Dim oldScreen As Boolean
+    Dim oldEvents As Boolean
+    Dim oldAlerts As Boolean
+
+    Dim errMsg As String
+    Dim completed As Boolean
+
+    oldScreen = Application.ScreenUpdating
+    oldEvents = Application.EnableEvents
+    oldAlerts = Application.DisplayAlerts
+
+    On Error GoTo ErrorHandler
+
+    '--------------------------------------------------------
+    ' 1. ツール画面の取得
+    '--------------------------------------------------------
+
+    Set wsTool = ThisWorkbook.Worksheets("Sheet1")
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    '--------------------------------------------------------
+    ' 2. ツール画面から各パスを取得する
+    '--------------------------------------------------------
+
+    folderPath = GetPathFromTool(wsTool, 7)
+
+    templatePath = GetPathFromTool(wsTool, 9)
+
+    outputFolder = GetPathFromTool(wsTool, 11)
+
+    '--------------------------------------------------------
+    ' 3. 入力パスのチェック
+    '--------------------------------------------------------
+
+    If folderPath = "" Then
+
+        MsgBox "LSTファイルの格納パスを入力してください。", _
+               vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If templatePath = "" Then
+
+        MsgBox "テンプレートファイルのパスを入力してください。", _
+               vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If outputFolder = "" Then
+
+        MsgBox "出力先フォルダのパスを入力してください。", _
+               vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If Not fso.FolderExists(folderPath) Then
+
+        MsgBox "LSTファイルの格納フォルダが存在しません。" & _
+               vbCrLf & folderPath, vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If Not fso.FileExists(templatePath) Then
+
+        MsgBox "テンプレートファイルが存在しません。" & _
+               vbCrLf & templatePath, vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If Not fso.FolderExists(outputFolder) Then
+
+        MsgBox "出力先フォルダが存在しません。" & _
+               vbCrLf & outputFolder, vbExclamation
+
+        Exit Sub
+
+    End If
+
+    If Right$(folderPath, 1) <> "\" Then
+        folderPath = folderPath & "\"
+    End If
+
+    '--------------------------------------------------------
+    ' 4. 対象LSTファイルの設定
+    '--------------------------------------------------------
+
+    fileNames = Array( _
+        "202607_pmaxnt01_rcv_v5.lst", _
+        "202607_pmaxnt01_snd_v5.lst", _
+        "202608_pmaxnt01_rcv_v5.lst", _
+        "202608_pmaxnt01_snd_v5.lst" _
+    )
+
+    '--------------------------------------------------------
+    ' 5. LSTファイルの存在チェック
+    '--------------------------------------------------------
+
+    For i = LBound(fileNames) To UBound(fileNames)
+
+        If Not fso.FileExists(folderPath & fileNames(i)) Then
+
+            MsgBox "対象LSTファイルが見つかりません。" & _
+                   vbCrLf & fileNames(i), vbExclamation
+
+            Exit Sub
+
+        End If
+
+    Next i
+
+    '--------------------------------------------------------
+    ' 6. 集計用Dictionaryの作成
+    '--------------------------------------------------------
+
+    Set dic = CreateObject("Scripting.Dictionary")
+
+    dic.CompareMode = vbTextCompare
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    Application.StatusBar = "LSTファイルを読み込み中..."
+
+    '--------------------------------------------------------
+    ' 7. 7月受信履歴の読み込み
+    '--------------------------------------------------------
+
+    totalCount = totalCount + ReadLstFile( _
+        folderPath & fileNames(0), _
+        "202607", _
+        "受信", _
+        dic)
+
+    '--------------------------------------------------------
+    ' 8. 7月送信履歴の読み込み
+    '--------------------------------------------------------
+
+    totalCount = totalCount + ReadLstFile( _
+        folderPath & fileNames(1), _
+        "202607", _
+        "送信", _
+        dic)
+
+    '--------------------------------------------------------
+    ' 9. 8月受信履歴の読み込み
+    '--------------------------------------------------------
+
+    totalCount = totalCount + ReadLstFile( _
+        folderPath & fileNames(2), _
+        "202608", _
+        "受信", _
+        dic)
+
+    '--------------------------------------------------------
+    ' 10. 8月送信履歴の読み込み
+    '--------------------------------------------------------
+
+    totalCount = totalCount + ReadLstFile( _
+        folderPath & fileNames(3), _
+        "202608", _
+        "送信", _
+        dic)
+
+    If totalCount = 0 Then
+
+        Err.Raise vbObjectError + 1000, , _
+            "有効なLSTデータが見つかりませんでした。"
+
+    End If
+
+    '--------------------------------------------------------
+    ' 11. テンプレートファイルを開く
+    '--------------------------------------------------------
+
+    Application.StatusBar = "テンプレートを読み込み中..."
+
+    Set wb = Workbooks.Open( _
+        Filename:=templatePath, _
+        UpdateLinks:=0, _
+        ReadOnly:=True)
+
+    '--------------------------------------------------------
+    ' 12. 対象シートの取得
+    '--------------------------------------------------------
+
+    Set wsCompare = FindTargetSheet( _
+        wb, "月間処理実績比較")
+
+    Set wsJuly = FindTargetSheet( _
+        wb, "7月明細データ")
+
+    Set wsAugust = FindTargetSheet( _
+        wb, "8月明細データ")
+
+    If wsCompare Is Nothing _
+       Or wsJuly Is Nothing _
+       Or wsAugust Is Nothing Then
+
+        Err.Raise vbObjectError + 1001, , _
+            "テンプレート内に必要な3つのシートがありません。"
+
+    End If
+
+    '--------------------------------------------------------
+    ' 13. 月間処理実績比較シートへの出力
+    '
+    ' 7月：H～N列
+    ' 8月：O～U列
+    '--------------------------------------------------------
+
+    Application.StatusBar = "月間比較データを作成中..."
+
+    WriteMonthlyData wsCompare, "202607", 8, dic
+
+    WriteMonthlyData wsCompare, "202608", 15, dic
+
+    '--------------------------------------------------------
+    ' 14. 7月明細データへの出力
+    '--------------------------------------------------------
+
+    Application.StatusBar = "7月明細データを作成中..."
+
+    WriteMonthlyData wsJuly, "202607", 8, dic
+
+    '--------------------------------------------------------
+    ' 15. 8月明細データへの出力
+    '--------------------------------------------------------
+
+    Application.StatusBar = "8月明細データを作成中..."
+
+    WriteMonthlyData wsAugust, "202608", 8, dic
+
+    '--------------------------------------------------------
+    ' 16. 比較結果の設定
+    '--------------------------------------------------------
+
+    WriteComparison wsCompare
+
+    '--------------------------------------------------------
+    ' 17. 計算結果の更新
+    '--------------------------------------------------------
+
+    wb.Calculate
+
+    '--------------------------------------------------------
+    ' 18. 出力ファイル名の作成
+    '--------------------------------------------------------
+
+    outputPath = CreateOutputPath( _
+        outputFolder, templatePath)
+
+    '--------------------------------------------------------
+    ' 19. 集計結果の保存
+    '--------------------------------------------------------
+
+    Application.StatusBar = "集計結果を保存中..."
+
+    If LCase$(Right$(outputPath, 5)) = ".xlsm" Then
+
+        wb.SaveAs _
+            Filename:=outputPath, _
+            FileFormat:=xlOpenXMLWorkbookMacroEnabled
+
+    Else
+
+        wb.SaveAs _
+            Filename:=outputPath, _
+            FileFormat:=xlOpenXMLWorkbook
+
+    End If
+
+    wb.Close SaveChanges:=False
+
+    Set wb = Nothing
+
+    completed = True
+
+ExitHandler:
+
+    Application.ScreenUpdating = oldScreen
+    Application.EnableEvents = oldEvents
+    Application.DisplayAlerts = oldAlerts
+
+    Application.StatusBar = False
+
+    If completed Then
+
+        MsgBox "月間処理実績比較の出力が完了しました。" & _
+               vbCrLf & vbCrLf & _
+               "読込件数：" & totalCount & "件" & _
+               vbCrLf & _
+               "出力ファイル：" & outputPath, _
+               vbInformation
+
+    End If
+
+    Exit Sub
+
+ErrorHandler:
+
+    errMsg = Err.Description
+
+    On Error Resume Next
+
+    If Not wb Is Nothing Then
+        wb.Close SaveChanges:=False
+    End If
+
+    On Error GoTo 0
+
+    MsgBox "処理中にエラーが発生しました。" & _
+           vbCrLf & errMsg, vbCritical
+
+    Resume ExitHandler
+
+End Sub
+
+
+'============================================================
+' ツール画面からパスを取得する
+'
+' テキストボックスとセルの両方に対応する
+'
+' 優先順位：
+'   1. 指定行のテキストボックス
+'   2. 指定行のC列セル
+'   3. 指定行のその他のセル
+'============================================================
+
+Private Function GetPathFromTool( _
+    ByVal ws As Worksheet, _
+    ByVal targetRow As Long) As String
+
+    Dim shp As Shape
+
+    Dim pathText As String
+    Dim cellValue As String
+
+    Dim c As Long
+
+    '--------------------------------------------------------
+    ' 1. テキストボックスから取得する
+    '--------------------------------------------------------
+
+    For Each shp In ws.Shapes
+
+        If shp.TopLeftCell.Row = targetRow Then
+
+            pathText = GetShapeText(shp)
+
+            pathText = CleanPath(pathText)
+
+            If IsPathText(pathText) Then
+
+                GetPathFromTool = pathText
+                Exit Function
+
+            End If
+
+        End If
+
+    Next shp
+
+    '--------------------------------------------------------
+    ' 2. C列セルから取得する
+    '--------------------------------------------------------
+
+    If Not IsError(ws.Cells(targetRow, 3).Value) Then
+
+        cellValue = CleanPath( _
+            CStr(ws.Cells(targetRow, 3).Value))
+
+        If IsPathText(cellValue) Then
+
+            GetPathFromTool = cellValue
+            Exit Function
+
+        End If
+
+    End If
+
+    '--------------------------------------------------------
+    ' 3. 指定行のセルを検索する
+    '--------------------------------------------------------
+
+    For c = 2 To 15
+
+        If Not IsError(ws.Cells(targetRow, c).Value) Then
+
+            cellValue = CleanPath( _
+                CStr(ws.Cells(targetRow, c).Value))
+
+            If IsPathText(cellValue) Then
+
+                GetPathFromTool = cellValue
+                Exit Function
+
+            End If
+
+        End If
+
+    Next c
+
+End Function
+
+
+'============================================================
+' 図形またはテキストボックスの文字列を取得する
+'============================================================
+
+Private Function GetShapeText( _
+    ByVal shp As Shape) As String
+
+    Dim result As String
+
+    On Error Resume Next
+
+    '--------------------------------------------------------
+    ' 通常のテキストボックス
+    '--------------------------------------------------------
+
+    result = shp.TextFrame2.TextRange.Text
+
+    '--------------------------------------------------------
+    ' 旧形式のテキストボックス
+    '--------------------------------------------------------
+
+    If result = "" Then
+
+        result = shp.TextFrame.Characters.Text
+
+    End If
+
+    '--------------------------------------------------------
+    ' ActiveXテキストボックス
+    '--------------------------------------------------------
+
+    If result = "" Then
+
+        result = CStr(shp.OLEFormat.Object.Object.Text)
+
+    End If
+
+    On Error GoTo 0
+
+    GetShapeText = result
+
+End Function
+
+
+'============================================================
+' パス文字列を整形する
+'============================================================
+
+Private Function CleanPath( _
+    ByVal pathText As String) As String
+
+    pathText = Replace(pathText, vbCr, "")
+    pathText = Replace(pathText, vbLf, "")
+
+    pathText = Trim$(pathText)
+
+    '--------------------------------------------------------
+    ' 前後のダブルクォーテーションを除去する
+    '--------------------------------------------------------
+
+    If Len(pathText) >= 2 Then
+
+        If Left$(pathText, 1) = """" _
+           And Right$(pathText, 1) = """" Then
+
+            pathText = Mid$(pathText, 2, Len(pathText) - 2)
+
+        End If
+
+    End If
+
+    CleanPath = pathText
+
+End Function
+
+
+'============================================================
+' Windows形式のパスか判定する
+'============================================================
+
+Private Function IsPathText( _
+    ByVal pathText As String) As Boolean
+
+    If Len(pathText) < 3 Then Exit Function
+
+    '--------------------------------------------------------
+    ' ドライブパスまたはネットワークパス
+    '--------------------------------------------------------
+
+    If Mid$(pathText, 2, 2) = ":\" Then
+
+        IsPathText = True
+
+    ElseIf Left$(pathText, 2) = "\\" Then
+
+        IsPathText = True
+
+    End If
+
+End Function
+
+
+'============================================================
+' LSTファイルの読み込み
+'
+' スペース区切りの項目：
+'
+'   fields(0)：HULFT-ID
+'   fields(1)：ホスト名
+'   fields(2)：処理日付
+'   fields(3)：開始時刻
+'   fields(4)：終了時刻
+'   fields(5)：集計対象外
+'   fields(6)：データサイズ（Byte）
+'
+' 集計キー：
+'   年月 | 送受信区分 | HULFT-ID
+'
+' 集計値：
+'   (0) 最大データサイズ（Byte）
+'   (1) 最大データの処理日付
+'   (2) 最大データの開始時刻
+'   (3) 最大データの終了時刻
+'   (4) 最大データの処理時間
+'   (5) 転送速度の合計
+'   (6) 有効レコード件数
+'============================================================
+
+Private Function ReadLstFile( _
+    ByVal filePath As String, _
+    ByVal targetMonth As String, _
+    ByVal direction As String, _
+    ByVal dic As Object) As Long
+
+    Dim fso As Object
+    Dim ts As Object
+    Dim reg As Object
+
+    Dim lineText As String
+    Dim fields As Variant
+
+    Dim hulftId As String
+    Dim key As String
+
+    Dim processDate As Date
+    Dim startTime As Date
+    Dim endTime As Date
+
+    Dim startDateTime As Date
+    Dim endDateTime As Date
+
+    Dim processSeconds As Double
+    Dim dataBytes As Double
+    Dim speed As Double
+
+    Dim data As Variant
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Set ts = fso.OpenTextFile(filePath, 1, False, -2)
+
+    Set reg = CreateObject("VBScript.RegExp")
+
+    reg.Global = True
+    reg.Pattern = "[ " & vbTab & "]+"
+
+    On Error GoTo ReadError
+
+    Do Until ts.AtEndOfStream
+
+        lineText = Trim$(ts.ReadLine)
+
+        If lineText = "" Then GoTo ContinueLoop
+
+        '----------------------------------------------------
+        ' 連続するスペースを1つにまとめる
+        '----------------------------------------------------
+
+        lineText = reg.Replace(lineText, " ")
+
+        fields = Split(lineText, " ")
+
+        If UBound(fields) < 6 Then GoTo ContinueLoop
+
+        '----------------------------------------------------
+        ' 必須項目の形式チェック
+        '----------------------------------------------------
+
+        If Not CStr(fields(2)) Like "####/##/##" Then
+            GoTo ContinueLoop
+        End If
+
+        If Not IsDate(fields(2)) Then GoTo ContinueLoop
+
+        If Not IsDate(fields(3)) Then GoTo ContinueLoop
+
+        If Not IsDate(fields(4)) Then GoTo ContinueLoop
+
+        If Not IsNumeric(fields(6)) Then GoTo ContinueLoop
+
+        hulftId = UCase$(Trim$(CStr(fields(0))))
+
+        If hulftId = "" Then GoTo ContinueLoop
+
+        '----------------------------------------------------
+        ' 日付と時刻を取得する
+        '----------------------------------------------------
+
+        processDate = DateSerial( _
+            CInt(Left$(fields(2), 4)), _
+            CInt(Mid$(fields(2), 6, 2)), _
+            CInt(Right$(fields(2), 2)))
+
+        startTime = TimeValue(fields(3))
+
+        endTime = TimeValue(fields(4))
+
+        startDateTime = processDate + startTime
+
+        endDateTime = processDate + endTime
+
+        '----------------------------------------------------
+        ' 終了時刻が開始時刻より前の場合は翌日とする
+        '----------------------------------------------------
+
+        If endDateTime < startDateTime Then
+
+            endDateTime = DateAdd("d", 1, endDateTime)
+
+        End If
+
+        processSeconds = DateDiff( _
+            "s", startDateTime, endDateTime)
+
+        '----------------------------------------------------
+        ' データサイズをByte単位で取得する
+        '----------------------------------------------------
+
+        dataBytes = CDbl(fields(6))
+
+        If dataBytes < 0 Then GoTo ContinueLoop
+
+        '----------------------------------------------------
+        ' 集計キーの作成
+        '----------------------------------------------------
+
+        key = targetMonth & "|" & direction & "|" & hulftId
+
+        If Not dic.Exists(key) Then
+
+            dic.Add key, Array( _
+                -1#, _
+                0#, _
+                0#, _
+                0#, _
+                0#, _
+                0#, _
+                0#)
+
+        End If
+
+        data = dic(key)
+
+        '----------------------------------------------------
+        ' 最大データサイズのレコードを保存する
+        '----------------------------------------------------
+
+        If dataBytes > CDbl(data(0)) Then
+
+            data(0) = dataBytes
+            data(1) = CDbl(processDate)
+            data(2) = CDbl(startTime)
+            data(3) = CDbl(endTime)
+            data(4) = processSeconds
+
+        End If
+
+        '----------------------------------------------------
+        ' 処理時間が0秒の場合は平均対象から除外する
+        '----------------------------------------------------
+
+        If processSeconds > 0 Then
+
+            speed = (dataBytes / 1024#) / processSeconds
+
+            data(5) = CDbl(data(5)) + speed
+
+            data(6) = CDbl(data(6)) + 1#
+
+        End If
+
+        dic(key) = data
+
+        ReadLstFile = ReadLstFile + 1
+
+ContinueLoop:
+
+    Loop
+
+    ts.Close
+
+    Exit Function
+
+ReadError:
+
+    Dim errorNumber As Long
+    Dim errorDescription As String
+
+    errorNumber = Err.Number
+    errorDescription = Err.Description
+
+    On Error Resume Next
+
+    ts.Close
+
+    On Error GoTo 0
+
+    Err.Raise errorNumber, , _
+        "LSTファイルの読み込みに失敗しました。" & _
+        vbCrLf & filePath & _
+        vbCrLf & errorDescription
+
+End Function
+
+
+'============================================================
+' 対象シートを取得する
+'============================================================
+
+Private Function FindTargetSheet( _
+    ByVal wb As Workbook, _
+    ByVal sheetKeyword As String) As Worksheet
+
+    Dim ws As Worksheet
+
+    For Each ws In wb.Worksheets
+
+        If InStr(1, ws.Name, sheetKeyword, _
+                 vbTextCompare) > 0 Then
+
+            Set FindTargetSheet = ws
+
+            Exit Function
+
+        End If
+
+    Next ws
+
+End Function
+
+
+'============================================================
+' 集計対象行を判定する
+'
+' A列：連番
+' B列：送信／受信
+' G列：HULFT-ID
+'
+' 記入例や見出し行は対象外とする
+'============================================================
+
+Private Function IsTargetRow( _
+    ByVal ws As Worksheet, _
+    ByVal rowNum As Long) As Boolean
+
+    Dim rowNumber As Variant
+    Dim direction As String
+    Dim hulftId As String
+
+    rowNumber = ws.Cells(rowNum, "A").Value
+
+    If IsError(rowNumber) Then Exit Function
+
+    '--------------------------------------------------------
+    ' A列に連番がない行は対象外とする
+    '--------------------------------------------------------
+
+    If Not IsNumeric(rowNumber) Then Exit Function
+
+    direction = Trim$(CStr(ws.Cells(rowNum, "B").Value))
+
+    hulftId = Trim$(CStr(ws.Cells(rowNum, "G").Value))
+
+    If direction <> "送信" And direction <> "受信" Then
+        Exit Function
+    End If
+
+    If hulftId = "" Then Exit Function
+
+    IsTargetRow = True
+
+End Function
+
+
+'============================================================
+' 月別集計データの出力
+'
+' firstCol = 8  ：H～N列
+' firstCol = 15 ：O～U列
+'
+' 最大データサイズのレコードを出力する
+'============================================================
+
+Private Sub WriteMonthlyData( _
+    ByVal ws As Worksheet, _
+    ByVal targetMonth As String, _
+    ByVal firstCol As Long, _
+    ByVal dic As Object)
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim c As Long
+
+    Dim direction As String
+    Dim hulftId As String
+    Dim key As String
+
+    Dim data As Variant
+
+    Dim dataKB As Double
+    Dim processSeconds As Double
+
+    lastRow = ws.Cells( _
+        ws.Rows.Count, "G").End(xlUp).Row
+
+    For r = 1 To lastRow
+
+        If Not IsTargetRow(ws, r) Then GoTo NextRow
+
+        direction = Trim$(CStr(ws.Cells(r, "B").Value))
+
+        hulftId = UCase$( _
+            Trim$(CStr(ws.Cells(r, "G").Value)))
+
+        key = targetMonth & "|" & direction & "|" & hulftId
+
+        '----------------------------------------------------
+        ' 一致する履歴が存在しない場合
+        '----------------------------------------------------
+
+        If Not dic.Exists(key) Then
+
+            For c = firstCol To firstCol + 6
+
+                ws.Cells(r, c).Value = "-"
+
+            Next c
+
+            GoTo NextRow
+
+        End If
+
+        data = dic(key)
+
+        dataKB = CDbl(data(0)) / 1024#
+
+        processSeconds = CDbl(data(4))
+
+        '----------------------------------------------------
+        ' 処理日付
+        '----------------------------------------------------
+
+        ws.Cells(r, firstCol).Value = CDate(data(1))
+
+        ws.Cells(r, firstCol).NumberFormat = "yyyy/mm/dd"
+
+        '----------------------------------------------------
+        ' 開始時刻
+        '----------------------------------------------------
+
+        ws.Cells(r, firstCol + 1).Value = CDbl(data(2))
+
+        ws.Cells(r, firstCol + 1).NumberFormat = "hh:mm:ss"
+
+        '----------------------------------------------------
+        ' 終了時刻
+        '----------------------------------------------------
+
+        ws.Cells(r, firstCol + 2).Value = CDbl(data(3))
+
+        ws.Cells(r, firstCol + 2).NumberFormat = "hh:mm:ss"
+
+        '----------------------------------------------------
+        ' 処理時間（秒）
+        '----------------------------------------------------
+
+        ws.Cells(r, firstCol + 3).Value = processSeconds
+
+        '----------------------------------------------------
+        ' データサイズ（KB）
+        '----------------------------------------------------
+
+        ws.Cells(r, firstCol + 4).Value = dataKB
+
+        '----------------------------------------------------
+        ' 最大データサイズの転送速度
+        '----------------------------------------------------
+
+        If processSeconds > 0 Then
+
+            ws.Cells(r, firstCol + 5).Value = _
+                dataKB / processSeconds
+
+        Else
+
+            ws.Cells(r, firstCol + 5).Value = "-"
+
+        End If
+
+        '----------------------------------------------------
+        ' 平均転送速度
+        '
+        ' 各レコードの転送速度を平均する
+        ' 処理時間0秒のレコードは対象外とする
+        '----------------------------------------------------
+
+        If CDbl(data(6)) > 0 Then
+
+            ws.Cells(r, firstCol + 6).Value = _
+                CDbl(data(5)) / CDbl(data(6))
+
+        Else
+
+            ws.Cells(r, firstCol + 6).Value = "-"
+
+        End If
+
+NextRow:
+
+    Next r
+
+End Sub
+
+
+'============================================================
+' 7月と8月の比較結果を出力する
+'
+' V列：最大データサイズの転送速度比較
+' W列：平均転送速度比較
+'
+' 既存の数式は変更しない
+'============================================================
+
+Private Sub WriteComparison(ByVal ws As Worksheet)
+
+    Dim lastRow As Long
+    Dim r As Long
+
+    lastRow = ws.Cells( _
+        ws.Rows.Count, "G").End(xlUp).Row
+
+    For r = 1 To lastRow
+
+        If Not IsTargetRow(ws, r) Then GoTo NextRow
+
+        '----------------------------------------------------
+        ' V列：7月M列と8月T列を比較する
+        '----------------------------------------------------
+
+        If Not ws.Cells(r, "V").HasFormula Then
+
+            ws.Cells(r, "V").Formula = _
+                "=IF(AND(ISNUMBER(M" & r & _
+                "),ISNUMBER(T" & r & _
+                ")),IF(T" & r & ">M" & r & _
+                ",""上昇"",IF(T" & r & "<M" & r & _
+                ",""低下"",""変化なし"")),""-"")"
+
+        End If
+
+        '----------------------------------------------------
+        ' W列：7月N列と8月U列を比較する
+        '----------------------------------------------------
+
+        If Not ws.Cells(r, "W").HasFormula Then
+
+            ws.Cells(r, "W").Formula = _
+                "=IF(AND(ISNUMBER(N" & r & _
+                "),ISNUMBER(U" & r & _
+                ")),IF(U" & r & ">N" & r & _
+                ",""上昇"",IF(U" & r & "<N" & r & _
+                ",""低下"",""変化なし"")),""-"")"
+
+        End If
+
+NextRow:
+
+    Next r
+
+End Sub
+
+
+'============================================================
+' 出力ファイルのフルパスを作成する
+'
+' 出力先はツール画面の11行目から取得する
+' 元のテンプレートは上書きしない
+'============================================================
+
+Private Function CreateOutputPath( _
+    ByVal outputFolder As String, _
+    ByVal templatePath As String) As String
+
+    Dim fso As Object
+
+    Dim extension As String
+    Dim outputName As String
+    Dim resultPath As String
+
+    Dim index As Long
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    If Right$(outputFolder, 1) <> "\" Then
+
+        outputFolder = outputFolder & "\"
+
+    End If
+
+    '--------------------------------------------------------
+    ' テンプレートと同じ拡張子を使用する
+    '--------------------------------------------------------
+
+    extension = LCase$( _
+        fso.GetExtensionName(templatePath))
+
+    If extension = "xlsm" Then
+
+        extension = ".xlsm"
+
+    Else
+
+        extension = ".xlsx"
+
+    End If
+
+    '--------------------------------------------------------
+    ' 出力ファイル名の作成
+    '--------------------------------------------------------
+
+    outputName = "月間処理実績比較_" & _
+                 Format$(Now, "yyyymmdd_hhnnss")
+
+    resultPath = outputFolder & outputName & extension
+
+    '--------------------------------------------------------
+    ' 同名ファイルが存在する場合は連番を付ける
+    '--------------------------------------------------------
+
+    index = 1
+
+    Do While fso.FileExists(resultPath)
+
+        resultPath = outputFolder & outputName & _
+                     "_" & CStr(index) & extension
+
+        index = index + 1
+
+    Loop
+
+    CreateOutputPath = resultPath
+
+End Function
